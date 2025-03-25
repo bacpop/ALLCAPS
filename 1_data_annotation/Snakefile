@@ -1,0 +1,116 @@
+################################################################################
+# Snakefile
+################################################################################
+rule all:
+    """
+    Final rule that depends on all outputs. Running 'snakemake' with no arguments
+    will build everything listed here.
+    """
+    input:
+        "results/base_embeddings.npy",
+        "results/base_tsne.pdf",
+        "results/contrastive_head.pth",
+        "results/contrastive_embeddings.npy",
+        "results/contrastive_tsne.pdf"
+
+################################################################################
+# Produce base embeddings using the frozen Nucleotide Transformer
+################################################################################
+rule embed_transformer:
+    input:
+        fasta="data/sequences.fasta"
+    output:
+        "results/base_embeddings.npy"
+    params:
+        model_name="InstaDeepAI/nucleotide-transformer-2.5b-multi-species",
+        device="cpu",
+        batch_size=4
+    shell:
+        """
+        python scripts/embed_transformer.py \
+            --fasta {input.fasta} \
+            --output {output} \
+            --model_name {params.model_name} \
+            --device {params.device} \
+            --batch_size {params.batch_size}
+        """
+
+################################################################################
+# Visualize the base Transformer embeddings with t-SNE
+################################################################################
+rule visualize_base_tsne:
+    input:
+        embeddings="results/base_embeddings.npy",
+        labels="data/labels.txt"
+    output:
+        "results/base_tsne.pdf"
+    shell:
+        """
+        python scripts/tsne_visualize.py \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --output {output} \
+            --title "Base Transformer Embeddings t-SNE"
+        """
+
+################################################################################
+# Train a contrastive head on top of the frozen embeddings
+################################################################################
+rule train_contrastive:
+    input:
+        "results/base_embeddings.npy"
+    output:
+        "results/contrastive_head.pth"
+    params:
+        device="cpu",
+        epochs=10,
+        batch_size=32,
+        lr=1e-3
+    shell:
+        """
+        python scripts/train_contrastive.py \
+            --embeddings {input} \
+            --output {output} \
+            --device {params.device} \
+            --epochs {params.epochs} \
+            --batch_size {params.batch_size} \
+            --lr {params.lr}
+        """
+
+################################################################################
+# Use the trained contrastive head to transform embeddings
+################################################################################
+rule embed_contrastive:
+    input:
+        embeddings="results/base_embeddings.npy",
+        head="results/contrastive_head.pth"
+    output:
+        "results/contrastive_embeddings.npy"
+    params:
+        device="cpu"
+    shell:
+        """
+        python scripts/infer_contrastive.py \
+            --embeddings {input.embeddings} \
+            --head {input.head} \
+            --output {output} \
+            --device {params.device}
+        """
+
+################################################################################
+# Visualize the new contrastive embeddings with t-SNE
+################################################################################
+rule visualize_contrastive_tsne:
+    input:
+        embeddings="results/contrastive_embeddings.npy",
+        labels="data/labels.txt"
+    output:
+        "results/contrastive_tsne.pdf"
+    shell:
+        """
+        python scripts/tsne_visualize.py \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --output {output} \
+            --title "Contrastive Embeddings t-SNE"
+        """
