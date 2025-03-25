@@ -4,6 +4,8 @@
 
 ### Custom ###
 .DS_Store
+config.yaml
+results/
 
 ### PyCharm ###
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider
