@@ -1,0 +1,7 @@
+device: "cuda"
+batch_size: 4
+epochs: 10
+lr: 0.0001
+fasta: "data/sequences.fasta"
+labels: "data/labels.txt"
+model_name: "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"

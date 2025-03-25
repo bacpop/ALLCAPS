@@ -1,6 +1,8 @@
 ################################################################################
 # Snakefile
 ################################################################################
+configfile: "config.yaml"
+
 rule all:
     """
     Final rule that depends on all outputs. Running 'snakemake' with no arguments
@@ -18,13 +20,13 @@ rule all:
 ################################################################################
 rule embed_transformer:
     input:
-        fasta="data/sequences.fasta"
+        fasta=config["fasta"]
     output:
         "results/base_embeddings.npy"
     params:
-        model_name="InstaDeepAI/nucleotide-transformer-2.5b-multi-species",
-        device="cpu",
-        batch_size=4
+        model_name=config["model_name"],
+        device=config["device"],
+        batch_size=config["batch_size"]
     shell:
         """
         python scripts/embed_transformer.py \
@@ -41,7 +43,7 @@ rule embed_transformer:
 rule visualize_base_tsne:
     input:
         embeddings="results/base_embeddings.npy",
-        labels="data/labels.txt"
+        labels=config["labels"]
     output:
         "results/base_tsne.pdf"
     shell:
@@ -62,10 +64,10 @@ rule train_contrastive:
     output:
         "results/contrastive_head.pth"
     params:
-        device="cpu",
-        epochs=10,
-        batch_size=32,
-        lr=1e-3
+        device=config["device"],
+        epochs=config["epochs"],
+        batch_size=config["batch_size"],
+        lr=config["lr"]
     shell:
         """
         python scripts/train_contrastive.py \
@@ -87,7 +89,7 @@ rule embed_contrastive:
     output:
         "results/contrastive_embeddings.npy"
     params:
-        device="cpu"
+        device=config["device"]
     shell:
         """
         python scripts/infer_contrastive.py \
@@ -103,7 +105,7 @@ rule embed_contrastive:
 rule visualize_contrastive_tsne:
     input:
         embeddings="results/contrastive_embeddings.npy",
-        labels="data/labels.txt"
+        labels=config["labels"]
     output:
         "results/contrastive_tsne.pdf"
     shell:
