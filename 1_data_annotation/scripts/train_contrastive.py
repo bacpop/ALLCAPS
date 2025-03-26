@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from .models import ContrastiveHead
+from models import ContrastiveHead
 
 
 DEFAULT_LR = 1e-3

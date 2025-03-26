@@ -2,6 +2,7 @@
 
 import argparse
 import numpy as np
+import pandas as pd
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
 
@@ -14,8 +15,10 @@ def main():
     args = parser.parse_args()
 
     X = np.load(args.embeddings)  # shape (N, D)
-    with open(args.labels, "r") as f:
-        y = [line.strip() for line in f]
+    y = pd.read_csv(args.labels, sep="\t")["serotype"]  # shape (N,)
+
+    y = y.fillna("Missing").replace("Non-typeable", "Missing")
+    y = y.values.tolist()
     
     assert len(X) == len(y), "Mismatch between embeddings and labels length"
 
@@ -26,6 +29,8 @@ def main():
     unique_labels = list(set(y))
     color_map = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))
     label_to_color = dict(zip(unique_labels, color_map))
+    label_to_color["Missing"] = "gray"  # Assign gray to "Missing"
+    label_to_color["Missing"] = "gray"
 
     for i, point in enumerate(X_2d):
         lbl = y[i]
@@ -36,6 +41,9 @@ def main():
     plt.legend(loc="best", title="Label")
 
     plt.title(args.title)
+    plt.gca().spines['top'].set_visible(False)
+    plt.gca().spines['right'].set_visible(False)
+
     plt.savefig(args.output)
     plt.close()
     print(f"Saved t-SNE plot to {args.output}")

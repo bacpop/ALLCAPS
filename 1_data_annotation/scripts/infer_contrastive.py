@@ -4,7 +4,7 @@ import argparse
 import numpy as np
 import torch
 
-from .models import ContrastiveHead
+from models import ContrastiveHead
 
 def main():
     parser = argparse.ArgumentParser()
