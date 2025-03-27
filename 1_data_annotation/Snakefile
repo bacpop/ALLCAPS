@@ -22,7 +22,7 @@ rule embed_transformer:
     input:
         fasta=config["fasta"]
     output:
-        "results/base_embeddings.npy"
+        protected("results/base_embeddings.npy")
     params:
         model_name=config["model_name"],
         device=config["device"],
@@ -62,7 +62,7 @@ rule train_contrastive:
     input:
         "results/base_embeddings.npy"
     output:
-        "results/contrastive_head.pth"
+        temp("results/contrastive_head.pth")
     params:
         device=config["device"],
         epochs=config["epochs"],
