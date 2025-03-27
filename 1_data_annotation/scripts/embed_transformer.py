@@ -5,6 +5,7 @@ import numpy as np
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 from Bio import SeqIO
+from tqdm import tqdm
 
 
 DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
@@ -31,7 +32,7 @@ def get_transformer_embeddings(
         max_length = tokenizer.model_max_length
 
     all_embeddings = []
-    for i in range(0, len(sequences), batch_size):
+    for i in tqdm(range(0, len(sequences), batch_size), desc="Batches"):
         batch_seqs = sequences[i : i + batch_size]
         tokenized = tokenizer.batch_encode_plus(
             batch_seqs,
