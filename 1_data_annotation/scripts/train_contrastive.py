@@ -38,6 +38,7 @@ def main():
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     args = parser.parse_args()
 
+    print("Loading embeddings...")
     device = args.device
     X = np.load(args.embeddings)  # shape (N, D)
     X_torch = torch.from_numpy(X).float().to(device)
@@ -46,6 +47,7 @@ def main():
     contrastive_head = ContrastiveHead(input_dim, output_dim=128).to(device)
     optimizer = optim.Adam(contrastive_head.parameters(), lr=args.lr)
 
+    print("Training contrastive head...")
     n = X_torch.shape[0]
     for epoch in range(args.epochs):
         perm = torch.randperm(n)

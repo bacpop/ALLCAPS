@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--title", default="t-SNE")
     args = parser.parse_args()
 
+    print("Loading embeddings and labels...")
     X = np.load(args.embeddings)  # shape (N, D)
     y = pd.read_csv(args.labels, sep="\t")["serotype"]  # shape (N,)
 
@@ -22,9 +23,11 @@ def main():
     
     assert len(X) == len(y), "Mismatch between embeddings and labels length"
 
+    print("Running t-SNE...")
     tsne = TSNE(n_components=2, perplexity=30, learning_rate="auto", init="random", random_state=42)
     X_2d = tsne.fit_transform(X)
 
+    print("Plotting t-SNE...")
     plt.figure(figsize=(6, 6))
     unique_labels = list(set(y))
     color_map = plt.cm.rainbow(np.linspace(0, 1, len(unique_labels)))

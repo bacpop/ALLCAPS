@@ -71,7 +71,10 @@ def main():
     parser.add_argument("--batch_size", type=int, default=4)
     args = parser.parse_args()
 
+    print("Reading FASTA file...")
     sequences = read_fasta(args.fasta)
+
+    print("Getting transformer embeddings...")
     embeddings = get_transformer_embeddings(
         sequences,
         model_name=args.model_name,

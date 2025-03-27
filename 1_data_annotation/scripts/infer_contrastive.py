@@ -14,6 +14,7 @@ def main():
     parser.add_argument("--device", default="cpu")
     args = parser.parse_args()
 
+    print("Loading embeddings...")
     device = args.device
     X = np.load(args.embeddings)  # shape (N, D)
     X_torch = torch.from_numpy(X).float().to(device)
