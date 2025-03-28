@@ -47,6 +47,8 @@ def main():
     contrastive_head = ContrastiveHead(input_dim, output_dim=128).to(device)
     optimizer = optim.Adam(contrastive_head.parameters(), lr=args.lr)
 
+    is_cuda = next(contrastive_head.parameters()).is_cuda
+    print(f"Contrastive head is using CUDA: {is_cuda}")
     print("Training contrastive head...")
     n = X_torch.shape[0]
     for epoch in range(args.epochs):
