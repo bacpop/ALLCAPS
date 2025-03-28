@@ -2,18 +2,15 @@
 # Snakefile
 ################################################################################
 configfile: "config.yaml"
+RESULTS_DIR = config["results_dir"]
 
 rule all:
-    """
-    Final rule that depends on all outputs. Running 'snakemake' with no arguments
-    will build everything listed here.
-    """
     input:
-        "results/base_embeddings.npy",
-        "results/base_tsne.pdf",
-        "results/contrastive_head.pth",
-        "results/contrastive_embeddings.npy",
-        "results/contrastive_tsne.pdf"
+        f"{RESULTS_DIR}/base_embeddings.npy",
+        f"{RESULTS_DIR}/base_tsne.pdf",
+        f"{RESULTS_DIR}/contrastive_head.pth",
+        f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        f"{RESULTS_DIR}/contrastive_tsne.pdf"
 
 ################################################################################
 # Produce base embeddings using the frozen Nucleotide Transformer
@@ -22,19 +19,17 @@ rule embed_transformer:
     input:
         fasta=config["fasta"]
     output:
-        protected("results/base_embeddings.npy")
+        protected(f"{RESULTS_DIR}/base_embeddings.npy")
     params:
         model_name=config["model_name"],
-        device=config["device"],
-        batch_size=config["batch_size"]
+        device=config["device"]
     shell:
         """
         python scripts/embed_transformer.py \
             --fasta {input.fasta} \
             --output {output} \
             --model_name {params.model_name} \
-            --device {params.device} \
-            --batch_size {params.batch_size}
+            --device {params.device}
         """
 
 ################################################################################
@@ -42,10 +37,10 @@ rule embed_transformer:
 ################################################################################
 rule visualize_base_tsne:
     input:
-        embeddings="results/base_embeddings.npy",
+        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
         labels=config["labels"]
     output:
-        "results/base_tsne.pdf"
+        f"{RESULTS_DIR}/base_tsne.pdf"
     shell:
         """
         python scripts/tsne_visualize.py \
@@ -60,9 +55,9 @@ rule visualize_base_tsne:
 ################################################################################
 rule train_contrastive:
     input:
-        "results/base_embeddings.npy"
+        f"{RESULTS_DIR}/base_embeddings.npy"
     output:
-        temp("results/contrastive_head.pth")
+        temp(f"{RESULTS_DIR}/contrastive_head.pth")
     params:
         device=config["device"],
         epochs=config["epochs"],
@@ -84,10 +79,10 @@ rule train_contrastive:
 ################################################################################
 rule embed_contrastive:
     input:
-        embeddings="results/base_embeddings.npy",
-        head="results/contrastive_head.pth"
+        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
+        head=f"{RESULTS_DIR}/contrastive_head.pth"
     output:
-        "results/contrastive_embeddings.npy"
+        f"{RESULTS_DIR}/contrastive_embeddings.npy"
     params:
         device=config["device"]
     shell:
@@ -104,10 +99,10 @@ rule embed_contrastive:
 ################################################################################
 rule visualize_contrastive_tsne:
     input:
-        embeddings="results/contrastive_embeddings.npy",
+        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
         labels=config["labels"]
     output:
-        "results/contrastive_tsne.pdf"
+        f"{RESULTS_DIR}/contrastive_tsne.pdf"
     shell:
         """
         python scripts/tsne_visualize.py \

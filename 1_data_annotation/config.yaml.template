@@ -4,4 +4,5 @@ epochs: 10
 lr: 0.0001
 fasta: "data/sequences.fasta"
 labels: "data/labels.txt"
+results_dir: "my_results"
 model_name: "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
