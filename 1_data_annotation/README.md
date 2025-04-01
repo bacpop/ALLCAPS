@@ -12,8 +12,13 @@ The pipeline uses [Snakemake](https://snakemake.readthedocs.io/) to ensure each 
 
 ## Running the Workflow
 0. *(Optional but recommended)* Create and activate a conda environment.
-1. Generate a `config.yaml` file based off the provided [template](./config.yaml.template).
+1. Generate a configuration file based off the provided [template](./config.yaml.template).
 2. Run Snakemake:
 ```bash
-snakemake --cores 1  # Or more if you'd like parallel jobs
+snakemake --configfile <path/to/configuration> --cores 1  # Or more if you'd like parallel jobs
 ```
+
+### Workflow DAG
+
+The whole DAG of the rules in the workflow is visualized [here](dag.pdf).
+> The graph is generated using Graphviz by `snakemake --forceall --dag | dot -Tpdf > dag.pdf`
