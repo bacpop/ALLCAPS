@@ -10,7 +10,7 @@ rule all:
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        f"{RESULTS_DIR}/contrastive_tsne.pdf"
+        f"{RESULTS_DIR}/contrastive_umap.pdf"
 
 ################################################################################
 # Produce base embeddings using the frozen Nucleotide Transformer
@@ -89,7 +89,8 @@ rule train_contrastive:
             --epochs {params.epochs} \
             --batch_size {params.batch_size} \
             --lr {params.lr} \
-            --model-params {config["model_params"]}
+            --model-params '{config[model_params]}' \
+            --labeled-only
         """
 
 ################################################################################
@@ -128,4 +129,19 @@ rule visualize_contrastive_tsne:
             --labels {input.labels} \
             --output {output} \
             --title "Contrastive Embeddings t-SNE"
+        """
+
+rule visualize_contrastive_umap:
+    input:
+        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        labels=config["labels"]
+    output:
+        f"{RESULTS_DIR}/contrastive_umap.pdf"
+    shell:
+        """
+        python scripts/umap_visualize.py \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --output {output} \
+            --title "Contrastive Embeddings UMAP"
         """
