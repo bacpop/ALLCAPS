@@ -72,7 +72,8 @@ rule visualize_umap:
 ################################################################################
 rule train_contrastive:
     input:
-        f"{RESULTS_DIR}/base_embeddings.npy"
+        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
+        labels=config["labels"]
     output:
         temp(f"{RESULTS_DIR}/contrastive_head.pth")
     params:
@@ -83,12 +84,14 @@ rule train_contrastive:
     shell:
         """
         python scripts/train_contrastive.py \
-            --embeddings {input} \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
             --output {output} \
             --device {params.device} \
             --epochs {params.epochs} \
             --batch_size {params.batch_size} \
-            --lr {params.lr}
+            --lr {params.lr} \
+            --model-params {config["model_params"]}
         """
 
 ################################################################################
