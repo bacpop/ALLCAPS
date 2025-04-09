@@ -1,25 +1,16 @@
 import argparse
 
-import re
 import umap
 import umap.plot
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
+from utils import map_serotype_to_group
+
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 DOWNSAMPLE_SIZE = 1000  # TODO: Make this a parameter
 LABEL_COLUMN = "serotype"  # TODO: Do sth about it
-
-
-def map_serotype_to_group(serotype):
-    """ Extract the number from the serotype string. """
-    if isinstance(serotype, str):
-        match = re.search(r"\d+", serotype)
-        if match:
-            return str(match.group())
-    return serotype
-    # {serotype: extract_number_from_serotype(serotype) for serotype in serotypes.unique()}
 
 
 def calculate_umap(embeddings, labels, output_prefix):
