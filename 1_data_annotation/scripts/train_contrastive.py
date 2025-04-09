@@ -12,7 +12,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from models import ContrastiveHead
-
+from utils import map_serotype_to_group
 
 EPS = 1e-9
 DEFAULT_LR = 1e-3
@@ -92,6 +92,7 @@ def train_one_epoch(model, X_train, labels_train, optimizer, batch_size, tempera
     avg_loss = total_loss / (num_batches + EPS)
     return avg_loss
 
+
 @torch.no_grad()
 def evaluate_loss(model, X_val, labels_val, batch_size, temperature):
     """
@@ -130,12 +131,14 @@ def main(args):
     k_folds = args.model_params.get("k_folds", DEFAULT_KFOLDS)
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
     random_state = args.model_params.get("random_state", 42)
-    
+
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
     assert X.shape[0] == labels.shape[0], "Number of embeddings and labels do not match."
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
+    if True:  # TODO: Will deal with subclasses later. Maybe next layer?
+        labels['Serotype'] = labels['Serotype'].apply(map_serotype_to_group)
 
     indices = np.arange(X.shape[0])
     if args.labeled_only:
@@ -165,7 +168,7 @@ def main(args):
         for epoch in tqdm(range(args.epochs), desc=f"Fold {fold_idx}/{k_folds}", leave=False, position=1):
             train_loss = train_one_epoch(model, X_train, y_train, optimizer, args.batch_size, temperature)
             val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
-            print(f"Epoch {epoch+1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            print(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
         # Final val loss after training
         final_val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
@@ -187,7 +190,7 @@ def main(args):
 
     for epoch in range(args.epochs):
         train_loss = train_one_epoch(model_final, X_torch, labels_known, optimizer_final, args.batch_size, temperature)
-        print(f"Retrain Epoch {epoch+1}/{args.epochs}, train_loss={train_loss:.4f}")
+        print(f"Retrain Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}")
 
     torch.save(model_final.state_dict(), args.output)
     print(f"Saved final model to {args.output}")
