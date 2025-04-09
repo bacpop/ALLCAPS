@@ -135,18 +135,17 @@ def main(args):
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
-    assert X.shape[0] == labels.shape[0], "Number of embeddings and labels do not match."
+    assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
-    if True:  # TODO: Will deal with subclasses later. Maybe next layer?
+    
+    # Sorry about this, Sam
+    if True:  # TODO Will deal with subclasses later. Maybe another head?
         labels['Serotype'] = labels['Serotype'].apply(map_serotype_to_group)
 
-    indices = np.arange(X.shape[0])
-    if args.labeled_only:
-        print("Using only labeled data for training...")
-        indices = labels['Serotype'] != MISSING_LABEL
+    indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
     X_known = X[indices]
     labels_known = labels['Serotype'][indices].values.tolist()
-    print(f"Total samples: {X.shape[0]}, Train/Val samples: {len(indices)}")
+    print(f"Total samples: {X.shape[0]}, of which using: {X_known.shape[0]}")
 
     X_torch = torch.from_numpy(X_known).float().to(device)
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
@@ -168,11 +167,11 @@ def main(args):
         for epoch in tqdm(range(args.epochs), desc=f"Fold {fold_idx}/{k_folds}", leave=False, position=1):
             train_loss = train_one_epoch(model, X_train, y_train, optimizer, args.batch_size, temperature)
             val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
-            print(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            tqdm.write(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
         # Final val loss after training
         final_val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
-        print(f"Fold {fold_idx} final val_loss: {final_val_loss:.4f}")
+        tqdm.write(f"Fold {fold_idx} final val_loss: {final_val_loss:.4f}")
         fold_metrics.append(final_val_loss)
 
     # Summarize cross-validation performance
@@ -181,7 +180,7 @@ def main(args):
     print(f"\nCross-validation results ({k_folds}-fold):")
     print(f"Mean val_loss = {mean_metric:.4f}, Std = {std_metric:.4f}")
 
-    print("\nRetraining on entire known-labeled dataset for final model...")  # TODO should I?
+    print("\nRetraining on entire known-labeled dataset for final model...")
     model_final = ContrastiveHead(input_dim=X_torch.shape[1], output_dim=128).to(device)
     optimizer_final = optim.Adam(model_final.parameters(), lr=args.lr)
 
