@@ -6,6 +6,7 @@ import torch
 
 from models import ContrastiveHead
 
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--embeddings", required=True)
@@ -30,6 +31,7 @@ def main():
 
     np.save(args.output, z_np)
     print(f"Saved contrastive embeddings to {args.output}")
+
 
 if __name__ == "__main__":
     main()

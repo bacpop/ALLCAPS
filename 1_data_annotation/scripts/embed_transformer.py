@@ -7,7 +7,6 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM
 from Bio import SeqIO
 from tqdm import tqdm
 
-
 DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
 
 
@@ -55,12 +54,12 @@ def get_transformer_embeddings(
 
         if len(tokens) <= chunk_size:  # short enough, no need to chunk, still need to clamp
             tokens_tensor = torch.tensor([tokens[:max_length]], device=device)
-            
+
             with torch.no_grad():
                 attention_mask = (tokens_tensor != tokenizer.pad_token_id).long()
                 outputs = model(
-                    tokens_tensor, 
-                    attention_mask=attention_mask, 
+                    tokens_tensor,
+                    attention_mask=attention_mask,
                     output_hidden_states=True
                 )
             last_hidden = outputs["hidden_states"][-1]  # (1, seq_len, hidden_dim)
@@ -108,7 +107,7 @@ def get_transformer_embeddings(
             chunk_embeddings = torch.stack(chunk_embeddings, dim=0)  # (num_chunks, hidden_dim)
             seq_embedding = chunk_embeddings.mean(dim=0)  # (hidden_dim,)
             all_sequence_embeddings.append(seq_embedding)
-    
+
     return torch.stack(all_sequence_embeddings, dim=0).cpu().numpy()
 
 
@@ -131,6 +130,7 @@ def main():
     )
     np.save(args.output, embeddings)
     print(f"Saved transformer embeddings to {args.output}")
+
 
 if __name__ == "__main__":
     main()
