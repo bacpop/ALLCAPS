@@ -5,11 +5,12 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import classification_report, confusion_matrix
+from sklearn.metrics import classification_report, f1_score
 
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 DEFAULT_TEST_SIZE = 0.2
-DEFAULT_KNN_K = 10
+DEFAULT_KNN_K = 5
+MIN_COUNT = 2  # Minimum count for a label to be considered valid
 
 def main(args):
     print(f"Loading contrastive embeddings and labels...")
@@ -19,8 +20,15 @@ def main(args):
 
     labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
     known_indices = labels['Serotype'] != MISSING_LABEL
+    
+    # Drop samples with labels that only occur once
+    underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < MIN_COUNT].index
+    if underrep_labels.any():
+        print("Dropping serotypes with only one sample:", *underrep_labels.to_list())
+    known_indices &= ~labels['Serotype'].isin(underrep_labels)
+    
     X_known, labels_known = X[known_indices], labels[known_indices]
-    print(f"Total samples: {X.shape[0]}, known-label samples: {len(known_indices)}")
+    print(f"Total samples: {X.shape[0]}, known-label samples: {X_known.shape[0]}")
 
     print(f"Training k-NN with k={args.knn_k} on final embeddings...")
     X_train, X_test, y_train, y_test = train_test_split(X_known, labels_known, test_size=args.test_size, random_state=42, stratify=labels_known)
@@ -29,18 +37,15 @@ def main(args):
     y_pred = knn.predict(X_test)
 
     report_str = classification_report(y_test, y_pred)
+    f1_str = f"F1-Weighted: {f1_score(y_test, y_pred, average='weighted')}"
     print("Classification Report:")
     print(report_str)
-    cm = confusion_matrix(y_test, y_pred)
-    print("Confusion Matrix:")
-    print(cm)
+    print(f1_str)
 
-    # 8) Save report
     with open(args.output, "w") as f:
         f.write("Classification Report (test set)\n")
-        f.write(report_str + "\n\n")
-        f.write("Confusion Matrix:\n")
-        f.write(str(cm) + "\n")
+        f.write(report_str + "\n")
+        f.write(f1_str)
 
     print(f"Saved k-NN classification report to {args.output}")
 
