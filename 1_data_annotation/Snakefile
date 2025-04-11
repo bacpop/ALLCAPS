@@ -10,6 +10,7 @@ rule all:
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        f"{RESULTS_DIR}/knn_report.txt",
         f"{RESULTS_DIR}/contrastive_umap.pdf"
 
 ################################################################################
@@ -111,6 +112,21 @@ rule embed_contrastive:
             --head {input.head} \
             --output {output} \
             --device {params.device}
+        """
+
+rule knn_inference:
+    input:
+        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        labels=config["labels"]
+    output:
+        f"{RESULTS_DIR}/knn_report.txt"
+    shell:  # TODO --knn_k {config[labels]}
+        """
+        python scripts/knn_inference.py \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --knn_k 15 \
+            --output {output}
         """
 
 ################################################################################
