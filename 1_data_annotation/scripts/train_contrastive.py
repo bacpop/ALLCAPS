@@ -5,6 +5,7 @@ import argparse
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+from functools import partial
 from sklearn.model_selection import StratifiedKFold
 
 import torch
@@ -20,8 +21,10 @@ DEFAULT_EPOCHS = 10
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_TEMPERATURE = 0.07
 DEFAULT_KFOLDS = 5
+DEFAULT_WEIGHT_FINE = 1.0
+DEFAULT_WEIGHT_COARSE = 0.4
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
-LABEL_COLUMN = "serotype"  # TODO: Do sth about it
+LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
 
 
 def supervised_contrastive_loss(z, labels, temperature):
@@ -46,17 +49,59 @@ def supervised_contrastive_loss(z, labels, temperature):
 
     exp_logits = torch.exp(logits)
     pos_exp = exp_logits * positives_mask
-    pos_sum = pos_exp.sum(dim=1)  # (N,)
+    numerator = pos_exp.sum(dim=1)  # (N,)
 
     den_exp = exp_logits * ~diag_mask
-    den_sum = den_exp.sum(dim=1)
+    denominator = den_exp.sum(dim=1)
 
-    loss_terms = -torch.log((pos_sum + EPS) / (den_sum + EPS))
+    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
     loss = loss_terms.mean()
     return loss
 
 
-def train_one_epoch(model, X_train, labels_train, optimizer, batch_size, temperature):
+def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weight_coarse=0.5):
+    """
+    Hierarchical contrastive loss that assigns different weights to pairs that share:
+      (a) the same fine label (strong positive),
+      (b) the same coarse label but different fine label (partial positive),
+      (c) different coarse label (negative).
+    """
+    device, N = z.device, z.shape[0]
+    coarse_labels, fine_labels = zip(*labels)
+
+    z = nn.functional.normalize(z, dim=1)
+    logits = z @ z.t() / temperature
+
+    weight_matrix = torch.zeros((N, N), dtype=torch.float, device=device)
+    for i in range(N):
+        for j in range(N):
+            if i == j: continue  # Exclude diagonal
+            if coarse_labels[i] == coarse_labels[j]:
+                if fine_labels[i] == fine_labels[j]:
+                    weight_matrix[i, j] = weight_fine  # Strong positive
+                else:
+                    weight_matrix[i, j] = weight_coarse  # Partial positive, e.g., 15A vs 15B
+
+    # An InfoNCE-like approach, but we sum up weighted positives in the numerator:
+    #    Numerator = sum_{j} [ W[i, j] * exp(logits[i, j]) ]
+    #    Denominator = sum_{k != i} [ exp(logits[i, k]) ]
+    #    Then L_i = - log( ( numerator ) / ( denominator ) ), and final L = mean(L_i).
+
+    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
+
+    exp_logits = torch.exp(logits)
+    den_exp = exp_logits * ~diag_mask
+    denominator = den_exp.sum(dim=1)  # shape (N,)
+
+    num_exp = exp_logits * weight_matrix
+    numerator = num_exp.sum(dim=1)
+
+    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
+    loss = loss_terms.mean()
+    return loss
+
+
+def train_one_epoch(model, loss_fn, X_train, labels_train, optimizer, batch_size, temperature):
     """
     Trains the model for one epoch using supervised contrastive loss.
     Returns the average training loss for this epoch.
@@ -81,7 +126,7 @@ def train_one_epoch(model, X_train, labels_train, optimizer, batch_size, tempera
         batch_labels = labels_shuffled[start:end]
 
         z = model(batch_data)
-        loss = supervised_contrastive_loss(z, batch_labels, temperature)
+        loss = loss_fn(z, batch_labels, temperature)
 
         optimizer.zero_grad()
         loss.backward()
@@ -94,7 +139,7 @@ def train_one_epoch(model, X_train, labels_train, optimizer, batch_size, tempera
 
 
 @torch.no_grad()
-def evaluate_loss(model, X_val, labels_val, batch_size, temperature):
+def evaluate_loss(model, loss_fn, X_val, labels_val, batch_size, temperature):
     """
     Computes the supervised contrastive loss on the validation set,
     returning the average loss as a 'validation metric'.
@@ -119,7 +164,7 @@ def evaluate_loss(model, X_val, labels_val, batch_size, temperature):
         if len(batch_data) == 0: break
 
         z = model(batch_data)
-        loss = supervised_contrastive_loss(z, batch_labels, temperature=temperature)
+        loss = loss_fn(z, batch_labels, temperature=temperature)
         total_loss += loss.item()
 
     avg_loss = total_loss / (num_batches + EPS)
@@ -128,23 +173,30 @@ def evaluate_loss(model, X_val, labels_val, batch_size, temperature):
 
 def main(args):
     device = args.device
+    random_state = args.model_params.get("random_state", 42)
     k_folds = args.model_params.get("k_folds", DEFAULT_KFOLDS)
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
-    random_state = args.model_params.get("random_state", 42)
+    weight_fine = args.model_params.get("weight_fine", DEFAULT_WEIGHT_FINE)
+    weight_coarse = args.model_params.get("weight_coarse", DEFAULT_WEIGHT_COARSE)
 
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
     assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
-    
-    # Sorry about this, Sam
-    if True:  # TODO Will deal with subclasses later. Maybe another head?
-        labels['Serotype'] = labels['Serotype'].apply(map_serotype_to_group)
 
     indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
     X_known = X[indices]
     labels_known = labels['Serotype'][indices].values.tolist()
+
+    loss_function = supervised_contrastive_loss
+    if args.hierarchical_loss:
+        print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
+        loss_function = partial(hierarchical_contrastive_loss, weight_fine=weight_fine, weight_coarse=weight_coarse)
+        labels['Coarse'] = labels['Serotype'].apply(map_serotype_to_group)
+        labels_known = list(zip(labels['Coarse'][indices].values.tolist(), labels['Serotype'][indices].values.tolist()))
+        # (labels['Coarse'][indices].values.tolist(), labels['Serotype'][indices].values.tolist()) ?
+
     print(f"Total samples: {X.shape[0]}, of which using: {X_known.shape[0]}")
 
     X_torch = torch.from_numpy(X_known).float().to(device)
@@ -165,12 +217,13 @@ def main(args):
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
         for epoch in tqdm(range(args.epochs), desc=f"Fold {fold_idx}/{k_folds}", leave=False, position=1):
-            train_loss = train_one_epoch(model, X_train, y_train, optimizer, args.batch_size, temperature)
-            val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
+            train_loss = train_one_epoch(model, loss_function, X_train, y_train, optimizer, args.batch_size,
+                                         temperature)
+            val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
             tqdm.write(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
 
         # Final val loss after training
-        final_val_loss = evaluate_loss(model, X_val, y_val, args.batch_size, temperature)
+        final_val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
         tqdm.write(f"Fold {fold_idx} final val_loss: {final_val_loss:.4f}")
         fold_metrics.append(final_val_loss)
 
@@ -208,6 +261,8 @@ def parse_args():
                         help="JSON string of model parameters.")
     parser.add_argument("--labeled-only", action="store_true",
                         help="Use only labeled data for training.")
+    parser.add_argument("--hierarchical-loss", action="store_true",
+                        help="Use weighted (coarse, fine) labels for training.")
     args = parser.parse_args()
 
     try:
