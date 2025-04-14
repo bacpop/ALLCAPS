@@ -187,15 +187,15 @@ def main(args):
 
     indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
     X_known = X[indices]
-    labels_known = labels['Serotype'][indices].values.tolist()
+    fine_labels = labels['Serotype'][indices].values.tolist()
 
     loss_function = supervised_contrastive_loss
+    labels_known = fine_labels
     if args.hierarchical_loss:
         print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
         loss_function = partial(hierarchical_contrastive_loss, weight_fine=weight_fine, weight_coarse=weight_coarse)
-        labels['Coarse'] = labels['Serotype'].apply(map_serotype_to_group)
-        labels_known = list(zip(labels['Coarse'][indices].values.tolist(), labels['Serotype'][indices].values.tolist()))
-        # (labels['Coarse'][indices].values.tolist(), labels['Serotype'][indices].values.tolist()) ?
+        coarse_labels = labels['Serotype'][indices].apply(map_serotype_to_group).values.tolist()
+        labels_known = list(zip(coarse_labels, fine_labels))
 
     print(f"Total samples: {X.shape[0]}, of which using: {X_known.shape[0]}")
 
@@ -203,7 +203,8 @@ def main(args):
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
 
     fold_metrics, fold_idx = [], 0
-    for train_idx, val_idx in tqdm(skf.split(X_torch.cpu().numpy(), labels_known),
+    # TODO Should I base the stratification on coarse labels or fine labels? Proceeding with fine for now
+    for train_idx, val_idx in tqdm(skf.split(X_torch.cpu().numpy(), fine_labels),
                                    desc="Cross-validation", leave=True, position=0):
         fold_idx += 1
 
@@ -241,7 +242,7 @@ def main(args):
     print(f"Contrastive head is using CUDA: {is_cuda}")
 
     for epoch in range(args.epochs):
-        train_loss = train_one_epoch(model_final, X_torch, labels_known, optimizer_final, args.batch_size, temperature)
+        train_loss = train_one_epoch(model_final, loss_function, X_torch, labels_known, optimizer_final, args.batch_size, temperature)
         print(f"Retrain Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}")
 
     torch.save(model_final.state_dict(), args.output)
