@@ -15,19 +15,26 @@ MIN_COUNT = 2  # Minimum count for a label to be considered valid
 def main(args):
     print(f"Loading contrastive embeddings and labels...")
     X = np.load(args.embeddings)  # shape (N, new_dim)
-    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels = pd.read_csv(args.labels, sep="\t")
     assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
 
     labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
+    
+    # In case someone has messed up while cleaning the data
+    is_duplicate = labels.duplicated()
+    if is_duplicate.any():
+        print("Dropping duplicate label rows...")
+        labels, X = labels[~is_duplicate], X[~is_duplicate]
+
     known_indices = labels['Serotype'] != MISSING_LABEL
     
     # Drop samples with labels that only occur once
     underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < MIN_COUNT].index
     if underrep_labels.any():
-        print("Dropping serotypes with only one sample:", *underrep_labels.to_list())
-    known_indices &= ~labels['Serotype'].isin(underrep_labels)
+        print(f"Dropping serotypes with less than {MIN_COUNT} samples:", *underrep_labels.to_list())
+        known_indices &= ~labels['Serotype'].isin(underrep_labels)
     
-    X_known, labels_known = X[known_indices], labels[known_indices]
+    X_known, labels_known = X[known_indices], labels[known_indices]["Serotype"]
     print(f"Total samples: {X.shape[0]}, known-label samples: {X_known.shape[0]}")
 
     print(f"Training k-NN with k={args.knn_k} on final embeddings...")

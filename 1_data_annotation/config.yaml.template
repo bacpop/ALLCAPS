@@ -7,3 +7,4 @@ labels: "data/labels.txt"
 results_dir: "my_results"
 model_name: "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
 model_params: '{"temperature": 0.07, "k_folds": 5}'
+knn_k: 5

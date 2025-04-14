@@ -74,7 +74,7 @@ rule train_contrastive:
         embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
         labels=config["labels"]
     output:
-        temp(f"{RESULTS_DIR}/contrastive_head.pth")
+        f"{RESULTS_DIR}/contrastive_head.pth"
     params:
         device=config["device"],
         epochs=config["epochs"],
@@ -125,7 +125,7 @@ rule knn_inference:
         python scripts/knn_inference.py \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
-            --knn_k 15 \
+            --knn_k {config[knn_k]} \
             --output {output}
         """
 
