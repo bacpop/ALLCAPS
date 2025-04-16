@@ -10,8 +10,9 @@ rule all:
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
-        f"{RESULTS_DIR}/contrastive_umap.pdf"
+        f"{RESULTS_DIR}/confusion_matrix_df.csv"
 
 ################################################################################
 # Produce base embeddings using the frozen Nucleotide Transformer
@@ -121,13 +122,14 @@ rule knn_inference:
         labels=config["labels"]
     output:
         f"{RESULTS_DIR}/knn_report.txt"
-    shell:  # TODO --knn_k {config[labels]}
+        f"{RESULTS_DIR}/confusion_matrix_df.csv"
+    shell:
         """
         python scripts/knn_inference.py \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --knn_k {config[knn_k]} \
-            --output {output}
+            --output-dir {RESULTS_DIR}
         """
 
 ################################################################################
