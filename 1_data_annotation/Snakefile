@@ -12,7 +12,8 @@ rule all:
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
         f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
-        f"{RESULTS_DIR}/confusion_matrix_df.csv"
+        f"{RESULTS_DIR}/confusion_matrix_df.csv",
+        f"{RESULTS_DIR}/f1_distributions.pdf"
 
 ################################################################################
 # Produce base embeddings using the frozen Nucleotide Transformer
@@ -163,4 +164,22 @@ rule visualize_contrastive_umap:
             --labels {input.labels} \
             --output {output} \
             --title "Contrastive Embeddings UMAP"
+        """
+
+rule stats_summary:
+    """
+    Generate a lineplot of class-wise F1 distributions for
+    each confusion matrix to compare analysis methods.
+    """
+    input:
+        cm_files=[f"{RESULTS_DIR}/confusion_matrix_df.csv"]
+    params:
+        legend_labels=["Analysis"],
+    output:
+        f"{RESULTS_DIR}/f1_distributions.pdf"
+    shell:
+        """
+        python scripts/plot_f1_distributions.py \
+            --confusion_matrices {input.cm_files} \
+            --output {output}
         """
