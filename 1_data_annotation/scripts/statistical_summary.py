@@ -6,6 +6,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from scipy.stats import gaussian_kde
 
+# Raises a RuntimeError if dvipng is not installed,
+# but only after successfully writing the plot to file!
+plt.rcParams.update({
+    "text.usetex": True,
+    "svg.fonttype": "none",
+    "ps.usedistiller": "xpdf",  # or 'none' or 'ghostscript'
+})
+
 
 def compute_per_class_f1(cm):
     """
