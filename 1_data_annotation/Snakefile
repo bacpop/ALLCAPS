@@ -181,6 +181,6 @@ rule stats_summary:
         """
         python scripts/statistical_summary.py \
             --confusion_matrices {input.cm_files} \
-            --legend {params.legend_labels}
+            --legend {params.legend_labels} \
             --output {output}
         """
