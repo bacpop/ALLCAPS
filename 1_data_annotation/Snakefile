@@ -122,7 +122,7 @@ rule knn_inference:
         embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
         labels=config["labels"]
     output:
-        f"{RESULTS_DIR}/knn_report.txt"
+        f"{RESULTS_DIR}/knn_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv"
     shell:
         """
@@ -179,7 +179,8 @@ rule stats_summary:
         f"{RESULTS_DIR}/f1_distributions.pdf"
     shell:
         """
-        python scripts/plot_f1_distributions.py \
+        python scripts/statistical_summary.py \
             --confusion_matrices {input.cm_files} \
+            --legend {params.legend_labels}
             --output {output}
         """
