@@ -1,7 +1,7 @@
 import argparse
 
+import os
 import umap
-import umap.plot
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -15,19 +15,21 @@ LABEL_COLUMN = "serotype"  # TODO: Do sth about it
 
 def calculate_umap(embeddings, labels, output_prefix):
     out_path = output_prefix + ".umap.csv"
-    reducer = umap.UMAP(random_state=42)  # Use no seed for parallelism
-    mapper = reducer.fit(embeddings)
+    # if os.path.exists(out_path):
+    #     print(f"UMAP file already exists: {out_path}")
+    #     return pd.read_csv(out_path)
+    reducer = umap.UMAP(random_state=42).fit(embeddings)
     UMAP_embedding = reducer.transform(embeddings)
     UMAP_embedding_df = pd.DataFrame(UMAP_embedding)
 
     UMAP_embedding_df.insert(0, 'Sample', labels.index)
     UMAP_embedding_df.insert(1, 'Serotype', labels.Serotype.tolist())
     UMAP_embedding_df.columns = ['Sample', 'Serotype', 'UMAP1', 'UMAP2']
-    # UMAP_embedding_df.to_csv(out_path + ".umap.csv", index=False)
-    return mapper, UMAP_embedding_df
+    UMAP_embedding_df.to_csv(out_path, index=False)
+    return UMAP_embedding_df
 
 
-def plot_umap(mapper, df, output_path):
+def plot_umap(df, output_path):
     """
     Plot UMAP visualization of the dataframe.
 
@@ -35,13 +37,28 @@ def plot_umap(mapper, df, output_path):
     - data: DataFrame containing the data to visualize. The columns are ['UMAP1', 'UMAP2', 'Serotype'].
     - output_path: Path to save the UMAP plot.
     """
-    # Plotting
-    # plt.figure(figsize=(10, 8))
-    # sns.scatterplot(data=umap_df, x='UMAP1', y='UMAP2', hue='Serotype', palette='viridis', alpha=0.7)
-    p = umap.plot.points(mapper, labels=df['Serotype'].apply(map_serotype_to_group), theme='fire')
+
+    serotypes = df['Serotype'].apply(map_serotype_to_group)
+    unique_serotypes = serotypes.unique()
+    colors = plt.cm.tab20(np.linspace(0, 1, len(unique_serotypes)))  # TODO explore colormaps
+    color_map = dict(zip(unique_serotypes, colors))
+
+    plt.figure(figsize=(15, 15))
+    for serotype, color in color_map.items():
+        subset = df[serotypes == serotype]
+        plt.scatter(subset['UMAP1'], subset['UMAP2'], label=serotype, color=color, alpha=0.7, s=10)
+
     plt.title('UMAP Visualization')
-    plt.savefig(output_path)  # , dpi=300, bbox_inches="tight")
+    plt.xlabel('UMAP1'), plt.ylabel('UMAP2')
+
+    plt.legend(title="Serogroups", loc='best', ncol=2, fontsize='small', markerscale=2.0, facecolor='darkgray')
+    plt.gcf().patch.set_facecolor('black')
+    plt.gca().set_facecolor('black')
+
+    plt.tight_layout()
+    plt.savefig(output_path)
     plt.close()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="UMAP visualization of data.")
@@ -72,9 +89,9 @@ def main(args):
         indices_mask[downsample_indices] = True
 
     print("Calculating UMAP...")
-    mapper, UMAP_embedding_df = calculate_umap(embeddings[indices_mask], labels[indices_mask], args.output)
+    UMAP_embedding_df = calculate_umap(embeddings[indices_mask], labels[indices_mask], args.output)
     print("Plotting UMAP...")
-    plot_umap(mapper, UMAP_embedding_df, args.output)
+    plot_umap(UMAP_embedding_df, args.output)
 
 
 if __name__ == "__main__":
