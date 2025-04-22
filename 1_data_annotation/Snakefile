@@ -13,6 +13,8 @@ rule all:
         f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
+        f"{RESULTS_DIR}/lda_rf_report.txt",
+        f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv",
         f"{RESULTS_DIR}/f1_distributions.pdf"
 
 ################################################################################
@@ -122,8 +124,8 @@ rule knn_inference:
         embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
         labels=config["labels"]
     output:
-        f"{RESULTS_DIR}/knn_report.txt",
-        f"{RESULTS_DIR}/confusion_matrix_df.csv"
+        report=f"{RESULTS_DIR}/knn_report.txt",
+        confusion_matrix=f"{RESULTS_DIR}/confusion_matrix_df.csv"
     shell:
         """
         python scripts/knn_inference.py \
@@ -166,15 +168,38 @@ rule visualize_contrastive_umap:
             --title "Contrastive Embeddings UMAP"
         """
 
+rule lda_analysis:
+    input:
+        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
+        labels=config["labels"]
+    output:
+        report=f"{RESULTS_DIR}/lda_rf_report.txt",
+        confusion_matrix=f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv"
+    params:
+        n_components=config["lda_components"]
+    threads: 8
+    shell:
+        """
+        python scripts/baseline_analysis.py \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --n_components {params.n_components} \
+            --test_size 0.2 \
+            --output-dir {RESULTS_DIR}
+        """
+
 rule stats_summary:
     """
     Generate a lineplot of class-wise F1 distributions for
     each confusion matrix to compare analysis methods.
     """
     input:
-        cm_files=[f"{RESULTS_DIR}/confusion_matrix_df.csv"]
+        cm_files=[
+            f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv",
+            f"{RESULTS_DIR}/confusion_matrix_df.csv"
+        ]
     params:
-        legend_labels=["Analysis"],
+        legend_labels=["LDA", "Contrastive"],
     output:
         f"{RESULTS_DIR}/f1_distributions.pdf"
     shell:
