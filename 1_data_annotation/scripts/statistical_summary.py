@@ -4,7 +4,8 @@ import argparse
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from scipy.stats import gaussian_kde
+from matplotlib.lines import Line2D
+from scipy.stats import gaussian_kde, ks_2samp
 
 # Raises a RuntimeError if dvipng is not installed,
 # but only after successfully writing the plot to file!
@@ -48,11 +49,13 @@ def compute_per_class_f1(cm):
 def main(args):
     plt.figure(figsize=(6, 5))
     kde_lines = []  # List to store KDE line objects
-
+    f1_scores_distributions = []  # List to store F1 score distributions
+    print("Loading confusion matrices...")
     for cm_path in args.confusion_matrices:
         cm = pd.read_csv(cm_path, index_col=0).values
         f1_scores, bal_acc = compute_per_class_f1(cm)
         if len(f1_scores) == 1: continue
+        f1_scores_distributions.append(f1_scores)
 
         xs = np.linspace(0, 1, 200)
         kde = gaussian_kde(f1_scores)
@@ -67,7 +70,6 @@ def main(args):
     plt.gca().spines['right'].set_visible(False)
     
     # Messy stuff to get a clean legend
-    from matplotlib.lines import Line2D
     dashed_line = Line2D([0], [0], color="black", linestyle="--", label="Balanced Accuracy")    
     if args.legend:
         plt.legend(kde_lines + [dashed_line], args.legend + ["Balanced Accuracy"], loc="best")
@@ -78,14 +80,21 @@ def main(args):
     plt.savefig(args.output)
     plt.close()
 
-    print(f"Plot saved to {args.output}")
+    print(f"Plot saved to {args.output}.")
+
+    if len(f1_scores_distributions) > 1:
+        print("Performing KS test...")
+        f1_scores_baseline = f1_scores_distributions[0]
+        f1_scores_method = f1_scores_distributions[1]
+        ks_stat, p_value = ks_2samp(f1_scores_baseline, f1_scores_method, alternative="greater")
+        print(f"\tKS test statistic: {ks_stat}, p-value: {p_value}")
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--confusion_matrices", nargs="+", required=True,
-        help="Paths to confusion matrix files (e.g., .csv). One plot line per file."
+        help="Paths to confusion matrix files (e.g., .csv). One plot line per file. The first file is the baseline."
     )
     parser.add_argument(
         "--legend", nargs="+", default=None, help="List of legend labels for each confusion matrix."
