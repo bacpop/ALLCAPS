@@ -13,6 +13,7 @@ rule all:
         f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
+        f"{RESULTS_DIR}/kmer_sketch.npz",
         f"{RESULTS_DIR}/lda_rf_report.txt",
         f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv",
         f"{RESULTS_DIR}/f1_distributions.pdf"
@@ -37,6 +38,22 @@ rule embed_transformer:
             --device {params.device}
         """
 
+rule kmer_sketch:
+    input:
+        fasta=config["fasta"]
+    output:
+        protected(f"{RESULTS_DIR}/kmer_sketch.npz")
+    params:
+        k=config["sketch_k"],
+        sketch_size=config["sketch_size"],
+    shell:
+        """
+        python scripts/kmer_sketch.py \
+            --fasta {input.fasta} \
+            --output {output} \
+            --k {params.k} \
+            --sketch_size {params.sketch_size}
+        """
 ################################################################################
 # Visualize the base Transformer embeddings with t-SNE
 ################################################################################
@@ -170,7 +187,7 @@ rule visualize_contrastive_umap:
 
 rule lda_analysis:
     input:
-        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
+        embeddings=f"{RESULTS_DIR}/kmer_sketch.npz",
         labels=config["labels"]
     output:
         report=f"{RESULTS_DIR}/lda_rf_report.txt",
