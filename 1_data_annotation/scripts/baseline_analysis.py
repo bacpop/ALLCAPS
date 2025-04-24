@@ -3,6 +3,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from scipy import sparse
 from sklearn.preprocessing import StandardScaler
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.ensemble import RandomForestClassifier
@@ -38,7 +39,7 @@ def parse_args():
 
 def main(args):
     print(f"Loading embeddings and labels...")
-    X = np.load(args.embeddings)  # shape (N, new_dim)
+    X = sparse.load_npz(args.embeddings).toarray()  # Convert sparse matrix to dense
     labels = pd.read_csv(args.labels, sep="\t")
     assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
 
