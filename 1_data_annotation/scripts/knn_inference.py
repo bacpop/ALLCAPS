@@ -4,9 +4,10 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
-from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, f1_score
+from sklearn.preprocessing import StandardScaler
 
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 DEFAULT_TEST_SIZE = 0.2
@@ -39,7 +40,9 @@ def main(args):
     X_known, labels_known = X[known_indices], labels[known_indices]["Serotype"]
     print(f"Total samples: {X.shape[0]}, known-label samples: {X_known.shape[0]}")
 
-    print(f"Training k-NN with k={args.knn_k} on final embeddings...")
+    print(f"Training k-NN with k={args.knn_k} on standardized embeddings...")
+    
+    X_known = StandardScaler().fit_transform(X_known)
     X_train, X_test, y_train, y_test = train_test_split(X_known, labels_known, test_size=args.test_size,
                                                         random_state=42, stratify=labels_known)
     knn = KNeighborsClassifier(n_neighbors=args.knn_k)
