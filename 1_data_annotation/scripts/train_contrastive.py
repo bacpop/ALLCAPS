@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from models import ContrastiveHead
+from models import TransformerContrastiveHead
 from utils import map_serotype_to_group
 
 EPS = 1e-9
@@ -25,6 +25,10 @@ DEFAULT_TEMPERATURE = 0.07
 DEFAULT_KFOLDS = 5
 DEFAULT_WEIGHT_FINE = 1.0
 DEFAULT_WEIGHT_COARSE = 0.6
+DEFAULT_NUM_LAYERS = 2
+DEFAULT_NHEAD = 4
+DEFAULT_DIM_FEEDFORWARD = 512
+
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
 PROJECT_NAME = "contrastive-training"
@@ -180,12 +184,18 @@ def main(args):
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
     weight_fine = args.model_params.get("weight_fine", DEFAULT_WEIGHT_FINE)
     weight_coarse = args.model_params.get("weight_coarse", DEFAULT_WEIGHT_COARSE)
+    num_layers = args.model_params.get("num_layers", DEFAULT_NUM_LAYERS)
+    nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
+    dim_feedforward = args.model_params.get("dim_feedforward", DEFAULT_DIM_FEEDFORWARD)
     wandb.config.update({
         "random_state": random_state,
         "k_folds": k_folds,
         "temperature": temperature,
         "weight_fine": weight_fine,
-        "weight_coarse": weight_coarse
+        "weight_coarse": weight_coarse,
+        "num_layers": num_layers,
+        "nhead": nhead,
+        "dim_feedforward": dim_feedforward,
     })
 
     print("Loading data...")
@@ -223,7 +233,7 @@ def main(args):
         y_val = [labels_known[i] for i in val_idx]
 
         input_dim = X_train.shape[1]
-        model = ContrastiveHead(input_dim=input_dim, output_dim=128).to(device)
+        model = TransformerContrastiveHead(input_dim, nhead, num_layers, dim_feedforward).to(device)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
         for epoch in tqdm(range(args.epochs), desc=f"Fold {fold_idx}/{k_folds}", leave=False, position=1):
@@ -247,13 +257,11 @@ def main(args):
     mean_metric, std_metric = fold_metrics.mean(), fold_metrics.std()
     print(f"\nCross-validation results ({k_folds}-fold):")
     print(f"Mean val_loss = {mean_metric:.4f}, Std = {std_metric:.4f}")
-    wandb.summary({
-        "mean_val_loss": mean_metric,
-        "std_val_loss": std_metric
-    })
+    wandb.summary["mean_val_loss"] = mean_metric
+    wandb.summary["std_val_loss"] = std_metric
 
     print("\nRetraining on entire known-labeled dataset for final model...")
-    model_final = ContrastiveHead(input_dim=X_torch.shape[1], output_dim=128).to(device)
+    model_final = TransformerContrastiveHead(X_torch.shape[1], nhead, num_layers, dim_feedforward).to(device)
     optimizer_final = optim.Adam(model_final.parameters(), lr=args.lr)
 
     is_cuda = next(model_final.parameters()).is_cuda
