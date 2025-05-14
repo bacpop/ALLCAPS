@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 
+import os
 import json
+import wandb
 import argparse
 import numpy as np
 import pandas as pd
@@ -22,10 +24,10 @@ DEFAULT_BATCH_SIZE = 32
 DEFAULT_TEMPERATURE = 0.07
 DEFAULT_KFOLDS = 5
 DEFAULT_WEIGHT_FINE = 1.0
-DEFAULT_WEIGHT_COARSE = 0.4
+DEFAULT_WEIGHT_COARSE = 0.6
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
-
+PROJECT_NAME = "contrastive-training"
 
 def supervised_contrastive_loss(z, labels, temperature):
     """
@@ -178,6 +180,13 @@ def main(args):
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
     weight_fine = args.model_params.get("weight_fine", DEFAULT_WEIGHT_FINE)
     weight_coarse = args.model_params.get("weight_coarse", DEFAULT_WEIGHT_COARSE)
+    wandb.config.update({
+        "random_state": random_state,
+        "k_folds": k_folds,
+        "temperature": temperature,
+        "weight_fine": weight_fine,
+        "weight_coarse": weight_coarse
+    })
 
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
@@ -222,6 +231,11 @@ def main(args):
                                          temperature)
             val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
             tqdm.write(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            wandb.log({
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "epoch": epoch + 1
+            })
 
         # Final val loss after training
         final_val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
@@ -233,6 +247,10 @@ def main(args):
     mean_metric, std_metric = fold_metrics.mean(), fold_metrics.std()
     print(f"\nCross-validation results ({k_folds}-fold):")
     print(f"Mean val_loss = {mean_metric:.4f}, Std = {std_metric:.4f}")
+    wandb.summary({
+        "mean_val_loss": mean_metric,
+        "std_val_loss": std_metric
+    })
 
     print("\nRetraining on entire known-labeled dataset for final model...")
     model_final = ContrastiveHead(input_dim=X_torch.shape[1], output_dim=128).to(device)
@@ -281,4 +299,13 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    args = parse_args()
+    run_id = os.environ.get("SLURM_JOB_ID", os.urandom(4).hex())
+    mode = "offline" if os.environ.get("WANDB_MODE") == "offline" else "online"
+    wandb.init(
+        project=PROJECT_NAME,
+        config=args,
+        mode=mode
+    )
+    wandb.run.name = f"{PROJECT_NAME}-{run_id}"
+    main(args)
