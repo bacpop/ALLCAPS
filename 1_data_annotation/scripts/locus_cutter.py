@@ -21,6 +21,17 @@ from functools import partial
 from collections import defaultdict
 
 
+np.random.seed(42)
+
+def extract_public_name(file_name):
+    try:
+        public_name = os.path.basename(file_name).split("__")[0]
+    except IndexError:
+        public_name = os.path.basename(file_name).split(".")[0]
+        print("Warning: No public name found in file name. Using file name as public name:", public_name)
+    return public_name
+
+
 def file_handler(file):
     """
     Check if the file is gzipped and return the appropriate open function.
@@ -84,11 +95,12 @@ def save_non_cbl(records, missing_files, list_len, out_path):
     MIN_LENGTH, MAX_LENGTH = 5000, 25000  # TODO use the histogram from 
     for missing_file in missing_files:
         _open = file_handler(missing_file)
+        public_name = extract_public_name(missing_file)
         with _open(missing_file) as f:
             fasta_sequences = SeqIO.parse(f, 'fasta')
             for fasta in fasta_sequences:
                 contig_id, sequence = fasta.id, str(fasta.seq)
-                records.append(SeqRecord(Seq(sequence), id=contig_id + "_missing", description=fasta.description))
+                records.append(SeqRecord(Seq(sequence), id=public_name + "__" + contig_id + "_missing", description=fasta.description))
     
     # Filter out too short sequences
     records = [record for record in records if len(record.seq) >= MIN_LENGTH]
@@ -124,11 +136,7 @@ def process_file(file, seq_pair_dict, cutoff):
         if seq1_valid or seq2_valid:
             with _open(file) as handle:
                 fasta_sequences = SeqIO.parse(handle, 'fasta')
-                try:
-                    public_name = os.path.basename(file).split("__")[0]
-                except IndexError:
-                    public_name = os.path.basename(file).split(".")[0]
-                    print("Warning: No public name found in file name. Using file name as public name:", public_name)
+                public_name = extract_public_name(file)
                 for fasta in fasta_sequences:
                     # Append each valid SeqRecord to cut_records.
                     contig_id, sequence = fasta.id, str(fasta.seq)
