@@ -1,24 +1,43 @@
 # Comprehensive database from CBLs
-The first milestone is to annotate the CPS sequences.
+This analysis aims at accurate identification of serotypes based on capsular sequences.
 
-## Directory Structure
+## Workflow Structure
 This directory contains a reproducible pipeline that:
-
-1. Extracts frozen Transformer embeddings from pretrained models ([`./scripts/embed_transformer.py`](./scripts/embed_transformer.py)).
-3. Trains a contrastive head on top of the frozen embeddings ([`./scripts/train_contrastive.py`](./scripts/train_contrastive.py)) and infers the new representation.
-3. Visualizes embeddings with t-SNE ([`./scripts/tsne_visualize.py`](./scripts/tsne_visualize.py)).
 
 The pipeline uses [Snakemake](https://snakemake.readthedocs.io/) to ensure each step only runs when necessary (based on file timestamps) and to provide a clear, modular workflow ([`./Snakefile`](./Snakefile)).
 
-## Running the Workflow
-0. *(Optional but recommended)* Create and activate a conda environment.
-1. Generate a configuration file based off the provided [template](./config.yaml.template).
-2. Run Snakemake:
-```bash
-snakemake --configfile <path/to/configuration> --cores 1  # Or more if you'd like parallel jobs
-```
+1. **`locus_cutter`**: Extracts CPS sequences from the input FASTA file by aligning flanking genes.
+2. **`embed_transformer`**: Generates base embeddings using a pretrained Nucleotide Transformer model.
+3. **`kmer_sketch`**: Creates k-mer sketches from the input FASTA file for the baseline analysis.
+4. **`visualize_umap`**: Visualizes the base embeddings using UMAP, for a visual comparison with (8).
+5. **`train_contrastive`**: Trains a contrastive head on top of the frozen base embeddings.
+6. **`embed_contrastive`**: Transforms the base embeddings using the trained contrastive head.
+7. **`knn_inference`**: Performs k-Nearest Neighbors (kNN) inference on the contrastive embeddings and generates a report.
+8. **`visualize_contrastive_umap`**: Visualizes the contrastive embeddings using UMAP and saves the plot.
+9. **`lda_analysis`**: Performs LDA and Random Forest classification on k-mer sketches and generates evaluation reports.
+10. **`stats_summary`**: Compares class-wise F1 distributions across analysis methods and generates a summary plot.
+11. **`calc_distances`**: Calculates pairwise distances among embeddings for further model fitting.
+12. **`novel_detection`**: Compares query pairwise distances from known serogroups distributions to report on its novelty.
+
+Each rule is designed to be modular and reproducible, ensuring efficient execution of the pipeline.
 
 ### Workflow DAG
 
 The whole DAG of the rules in the workflow is visualized [here](dag.pdf).
 > The graph is generated using Graphviz by `snakemake --forceall --dag | dot -Tpdf > dag.pdf`
+
+## How to Run
+
+### Requirements
+To run the workflow, ensure the following dependencies are installed:
+1. **Python** (>3.8) and usual packages, e.g., `numpy`, `pandas`, `matplotlib`, `scikit-learn`, `tqdm`, `umap-learn`, `torch`, etc.
+2. **Snakemake**: For managing the workflow ([installation guide](https://snakemake.readthedocs.io/en/stable/getting_started/installation.html)).
+3. **Conda**: Recommended for creating isolated environments.
+
+### Setup
+0. *(Optional but recommended)* Create and activate a conda environment.
+1. Generate a configuration file based off the provided [template](./config.yaml.template).
+2. Run Snakemake:
+```bash
+snakemake --configfile <path/to/configuration> --cores 1
+```
