@@ -15,7 +15,7 @@ import torch.nn as nn
 import torch.optim as optim
 
 from models import TransformerContrastiveHead
-from utils import map_serotype_to_group
+from utils import map_serotype_to_group, supervised_contrastive_loss, hierarchical_contrastive_loss
 
 EPS = 1e-9
 DEFAULT_LR = 1e-3
@@ -32,79 +32,6 @@ DEFAULT_DIM_FEEDFORWARD = 512
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
 PROJECT_NAME = "contrastive-training"
-
-def supervised_contrastive_loss(z, labels, temperature):
-    """
-    Supervised Contrastive Loss:
-      - For each anchor i, all samples j with the same label are positives.
-      - Different labels => negatives.
-      - i != j (exclude diagonal).
-    """
-    device, N = z.device, z.shape[0]
-    z = nn.functional.normalize(z, dim=1)  # Normalize embeddings for stable similarity
-    logits = z @ z.t() / temperature  # shape (N, N)
-
-    # positives_mask = torch.tensor([[(labels[i] == labels[j]) and (i != j) for j in range(N)] for i in range(N)], device=device)
-    positives_mask = torch.zeros((N, N), dtype=torch.bool, device=device)
-    for i in range(N):
-        for j in range(N):
-            if i != j and labels[i] == labels[j]:
-                positives_mask[i, j] = True
-
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
-
-    exp_logits = torch.exp(logits)
-    pos_exp = exp_logits * positives_mask
-    numerator = pos_exp.sum(dim=1)  # (N,)
-
-    den_exp = exp_logits * ~diag_mask
-    denominator = den_exp.sum(dim=1)
-
-    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
-    loss = loss_terms.mean()
-    return loss
-
-
-def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weight_coarse=0.5):
-    """
-    Hierarchical contrastive loss that assigns different weights to pairs that share:
-      (a) the same fine label (strong positive),
-      (b) the same coarse label but different fine label (partial positive),
-      (c) different coarse label (negative).
-    """
-    device, N = z.device, z.shape[0]
-    coarse_labels, fine_labels = zip(*labels)
-
-    z = nn.functional.normalize(z, dim=1)
-    logits = z @ z.t() / temperature
-
-    weight_matrix = torch.zeros((N, N), dtype=torch.float, device=device)
-    for i in range(N):
-        for j in range(N):
-            if i == j: continue  # Exclude diagonal
-            if coarse_labels[i] == coarse_labels[j]:
-                if fine_labels[i] == fine_labels[j]:
-                    weight_matrix[i, j] = weight_fine  # Strong positive
-                else:
-                    weight_matrix[i, j] = weight_coarse  # Partial positive, e.g., 15A vs 15B
-
-    # An InfoNCE-like approach, but we sum up weighted positives in the numerator:
-    #    Numerator = sum_{j} [ W[i, j] * exp(logits[i, j]) ]
-    #    Denominator = sum_{k != i} [ exp(logits[i, k]) ]
-    #    Then L_i = - log( ( numerator ) / ( denominator ) ), and final L = mean(L_i).
-
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
-
-    exp_logits = torch.exp(logits)
-    den_exp = exp_logits * ~diag_mask
-    denominator = den_exp.sum(dim=1)  # shape (N,)
-
-    num_exp = exp_logits * weight_matrix
-    numerator = num_exp.sum(dim=1)
-
-    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
-    loss = loss_terms.mean()
-    return loss
 
 
 def train_one_epoch(model, loss_fn, X_train, labels_train, optimizer, batch_size, temperature):

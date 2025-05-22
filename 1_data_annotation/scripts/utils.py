@@ -1,5 +1,8 @@
 import re
+import torch
+import torch.nn as nn
 
+EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of
 # similar groupings, i.e. genogroups or serogroups. We use it
@@ -74,13 +77,18 @@ SEROTYPE_GROUPS = {
     "42": "35A_35C_42",
     "46": "12_44_46"
 }
-
+WHITELIST = ["NON-CBL"]
 
 def map_serotype_to_group(serotype):
     """ Map serotype to a more coarse label by
     looking it up in the serogroup/genogroups data. """
-    if isinstance(serotype, str):
-        return SEROTYPE_GROUPS.get(serotype, serotype)
+    if not isinstance(serotype, str):
+        raise ValueError("Serotype must be a string.")
+    
+    if serotype in WHITELIST:
+        return serotype
+    if serotype in SEROTYPE_GROUPS:
+        return SEROTYPE_GROUPS[serotype]
     print(f"Warning: {serotype} not found in mapping.")
     return serotype
 
@@ -93,3 +101,77 @@ def extract_serogroup(serotype):
         if match:
             return str(match.group())
     return serotype
+
+
+def supervised_contrastive_loss(z, labels, temperature):
+    """
+    Supervised Contrastive Loss:
+      - For each anchor i, all samples j with the same label are positives.
+      - Different labels => negatives.
+      - i != j (exclude diagonal).
+    """
+    device, N = z.device, z.shape[0]
+    z = nn.functional.normalize(z, dim=1)  # Normalize embeddings for stable similarity
+    logits = z @ z.t() / temperature  # shape (N, N)
+
+    # positives_mask = torch.tensor([[(labels[i] == labels[j]) and (i != j) for j in range(N)] for i in range(N)], device=device)
+    positives_mask = torch.zeros((N, N), dtype=torch.bool, device=device)
+    for i in range(N):
+        for j in range(N):
+            if i != j and labels[i] == labels[j]:
+                positives_mask[i, j] = True
+
+    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
+
+    exp_logits = torch.exp(logits)
+    pos_exp = exp_logits * positives_mask
+    numerator = pos_exp.sum(dim=1)  # (N,)
+
+    den_exp = exp_logits * ~diag_mask
+    denominator = den_exp.sum(dim=1)
+
+    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
+    loss = loss_terms.mean()
+    return loss
+
+
+def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weight_coarse=0.5):
+    """
+    Hierarchical contrastive loss that assigns different weights to pairs that share:
+      (a) the same fine label (strong positive),
+      (b) the same coarse label but different fine label (partial positive),
+      (c) different coarse label (negative).
+    """
+    device, N = z.device, z.shape[0]
+    coarse_labels, fine_labels = zip(*labels)
+
+    z = nn.functional.normalize(z, dim=1)
+    logits = z @ z.t() / temperature
+
+    weight_matrix = torch.zeros((N, N), dtype=torch.float, device=device)
+    for i in range(N):
+        for j in range(N):
+            if i == j: continue  # Exclude diagonal
+            if coarse_labels[i] == coarse_labels[j]:
+                if fine_labels[i] == fine_labels[j]:
+                    weight_matrix[i, j] = weight_fine  # Strong positive
+                else:
+                    weight_matrix[i, j] = weight_coarse  # Partial positive, e.g., 15A vs 15B
+
+    # An InfoNCE-like approach, but we sum up weighted positives in the numerator:
+    #    Numerator = sum_{j} [ W[i, j] * exp(logits[i, j]) ]
+    #    Denominator = sum_{k != i} [ exp(logits[i, k]) ]
+    #    Then L_i = - log( ( numerator ) / ( denominator ) ), and final L = mean(L_i).
+
+    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
+
+    exp_logits = torch.exp(logits)
+    den_exp = exp_logits * ~diag_mask
+    denominator = den_exp.sum(dim=1)  # shape (N,)
+
+    num_exp = exp_logits * weight_matrix
+    numerator = num_exp.sum(dim=1)
+
+    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
+    loss = loss_terms.mean()
+    return loss
