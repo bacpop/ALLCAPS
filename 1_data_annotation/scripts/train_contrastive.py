@@ -186,6 +186,9 @@ def main(args):
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
 
     indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
+    if args.skip_labels:
+        print(f"Skipping labels: {args.skip_labels}")
+        indices &= ~labels['Serotype'].isin(args.skip_labels)
     X_known = X[indices]
     fine_labels = labels['Serotype'][indices].values.tolist()
 
@@ -264,6 +267,9 @@ def parse_args():
                         help="Use only labeled data for training.")
     parser.add_argument("--hierarchical-loss", action="store_true",
                         help="Use weighted (coarse, fine) labels for training.")
+    # a new argument that receives a list of strings to skip labels in training
+    parser.add_argument("--skip-labels", type=str, default="",
+                        help="Comma-separated list of labels to skip in training.")
     args = parser.parse_args()
 
     try:
@@ -276,6 +282,12 @@ def parse_args():
         args.model_params = {}
     finally:
         print("Model parameters:", args.model_params)
+
+    try:
+        args.skip_labels = [label.strip() for label in args.skip_labels.split(",") if label.strip()]
+    except ValueError:
+        print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
+        args.skip_labels = []
 
     return args
 
