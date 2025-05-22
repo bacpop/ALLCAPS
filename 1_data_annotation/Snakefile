@@ -7,6 +7,7 @@ RESULTS_DIR = config["results_dir"]
 rule all:
     input:
         f"{RESULTS_DIR}/base_embeddings.npy",
+        f"{RESULTS_DIR}/base_embeddings_chunked.pt"
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
@@ -35,6 +36,27 @@ rule embed_transformer:
             --fasta {input.fasta} \
             --output {output} \
             --model_name {params.model_name} \
+            --device {params.device}
+        """
+
+rule embed_transformer_chunked:
+    input:
+        fasta=config["fasta"]
+    output:
+        protected(f"{RESULTS_DIR}/base_embeddings_chunked.pt")
+    params:
+        model_name=config["model_name"],
+        device=config["device"],
+        chunk_size=1000,
+        stride_ratio=0.5  # TODO: add chunk size and overlap to config
+    shell:
+        """
+        python scripts/infer_chunked_transformer.py \
+            --fasta {input.fasta} \
+            --output {output} \
+            --model_name {params.model_name} \
+            --chunk_size {params.chunk_size} \
+            --stride_ratio {params.stride_ratio} \
             --device {params.device}
         """
 
