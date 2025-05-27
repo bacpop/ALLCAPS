@@ -7,7 +7,7 @@ RESULTS_DIR = config["results_dir"]
 rule all:
     input:
         f"{RESULTS_DIR}/base_embeddings.npy",
-        f"{RESULTS_DIR}/base_embeddings_chunked.pt"
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
@@ -43,7 +43,7 @@ rule embed_transformer_chunked:
     input:
         fasta=config["fasta"]
     output:
-        protected(f"{RESULTS_DIR}/base_embeddings_chunked.pt")
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked")
     params:
         model_name=config["model_name"],
         device=config["device"],
@@ -53,7 +53,7 @@ rule embed_transformer_chunked:
         """
         python scripts/infer_chunked_transformer.py \
             --fasta {input.fasta} \
-            --output {output} \
+            --out_dir {output} \
             --model_name {params.model_name} \
             --chunk_size {params.chunk_size} \
             --stride_ratio {params.stride_ratio} \
