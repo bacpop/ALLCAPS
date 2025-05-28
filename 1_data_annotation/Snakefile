@@ -7,7 +7,7 @@ RESULTS_DIR = config["results_dir"]
 rule all:
     input:
         f"{RESULTS_DIR}/base_embeddings.npy",
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
+        f"{RESULTS_DIR}/base_embeddings_chunked",
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
