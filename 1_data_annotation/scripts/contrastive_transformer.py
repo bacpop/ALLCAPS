@@ -28,9 +28,11 @@ DEFAULT_KFOLDS = 5
 DEFAULT_WEIGHT_FINE = 1.0
 DEFAULT_WEIGHT_COARSE = 0.6
 DEFAULT_NUM_LAYERS = 1
-DEFAULT_NHEAD = 3
+DEFAULT_NHEAD = 4
+DEFAULT_EMBEDDING_DIM = 2560  # Nucleotide Transformer output TODO
 DEFAULT_DIM_FEEDFORWARD = 512
 DEFAULT_CONTRASTIVE_LOSS_RATIO = 0.4
+DEFAULT_EARLY_STOPPING = 5
 
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
@@ -48,11 +50,13 @@ def parse_args():
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
     parser.add_argument("--model_params", type=str, default="{}",
-                        help="JSON string of model parameters (output_dim, num_layers, nhead, lr, alpha, temperature, etc.)")
+                        help="JSON string of model parameters (output_dim, num_layers, nhead, alpha, temperature, etc.)")
+    parser.add_argument("--labeled_only", action="store_true")
     parser.add_argument("--skip_labels", type=str, default="",
                         help="Comma-separated list of labels to skip in training.")
     parser.add_argument("--hierarchical_loss", action="store_true",
                         help="Use weighted (coarse, fine) labels for training.")
+    parser.add_argument("--early_stopping", type=int, default=DEFAULT_EARLY_STOPPING)
     args = parser.parse_args()
 
     try:
@@ -76,7 +80,17 @@ def parse_args():
 
 
 def collate_fn(batch):
-    return pad_sequence([torch.tensor(item) for item in batch], batch_first=True)
+    embeddings = [item['embedding'] for item in batch]  # [(L_i, D), ...]
+    serotypes = [item['serotype'] for item in batch]
+    is_capsule = torch.tensor([item['is_capsule'] for item in batch], dtype=torch.long)
+
+    padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
+
+    return {
+        'embedding': padded_embeddings,   # tensor [B, L_max, D]
+        'serotype': serotypes,            # list[str]
+        'is_capsule': is_capsule          # tensor [B]
+    }
 
 
 def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
@@ -101,12 +115,20 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, a
         loss.backward()
         optimizer.step()
 
-        wandb.log({
-            "train_loss": loss.item(),
-            "ce_loss": ce_loss.item(),
-            "contrastive_loss": contrastive_loss.item(),
-        })
+        # wandb.log({
+        #     "train_loss": loss.item(),
+        #     "ce_loss": ce_loss.item(),
+        #     "contrastive_loss": contrastive_loss.item(),
+        # })
         total_loss += loss.item()
+        ce_loss += ce_loss.item()
+        contrastive_loss += contrastive_loss.item()
+
+    wandb.log({
+        "epoch_loss": total_loss / len(loader),
+        "epoch_ce_loss": ce_loss / len(loader),
+        "epoch_contrastive_loss": contrastive_loss / len(loader)
+    })
     return total_loss / len(loader)
 
 
@@ -155,6 +177,7 @@ def main(args):
     nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
     alpha = args.model_params.get("alpha", DEFAULT_CONTRASTIVE_LOSS_RATIO)
     output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
+    embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
 
     wandb.config.update({
         "random_state": random_state,
@@ -183,9 +206,9 @@ def main(args):
     fine_labels = labels['Serotype'][indices].values.tolist()
     if args.hierarchical_loss:
         print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
-        coarse_labels = labels['Serotype'].apply(map_serotype_to_group).tolist()
+        coarse_labels = labels['Serotype'][indices].apply(map_serotype_to_group).tolist()
         labels_known = list(zip(coarse_labels, fine_labels))
-        loss_function = partial(hierarchical_contrastive_loss, weight_fine=args.weight_fine, weight_coarse=args.weight_coarse)
+        loss_function = partial(hierarchical_contrastive_loss, weight_fine=weight_fine, weight_coarse=weight_coarse)
     else:
         labels_known = fine_labels
         loss_function = supervised_contrastive_loss
@@ -194,7 +217,7 @@ def main(args):
     is_capsule = (labels['Serotype'] != NONCBL_LABEL).astype(int)[indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
-    for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(labels_known)), labels_known)):  # Dummy X
+    for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X
         print(f"Fold {fold+1} / {k_folds}")
 
         train_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[train_idx],
@@ -202,43 +225,55 @@ def main(args):
         test_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[test_idx],
                                             np.array(labels_known)[test_idx], np.array(is_capsule)[test_idx])
 
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-        test_loader = DataLoader(test_ds, batch_size=args.batch_size)
+        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=collate_fn)
 
         model = TransformerContrastiveHead(
-            input_dim=train_ds.embedding_dim,
-            output_dim=args.output_dim,
-            max_len=train_ds.max_len,
-            nhead=args.nhead,
-            num_layers=args.num_layers
+            input_dim=embedding_dim,
+            output_dim=output_dim,
+            nhead=nhead,
+            num_layers=num_layers
         ).to(device)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         ce_loss_fn = nn.CrossEntropyLoss()
 
-        for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold+1}"):
-            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, loss_function, args.alpha, args.temperature)
+        best_loss, patience_counter = float('inf'), 0
 
-        test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, args.alpha, args.temperature)
-        print(f"Fold {fold+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
+        for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold+1}"):
+            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, loss_function, alpha, temperature)
+
+            test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, alpha, temperature)
+            print(f"Fold {fold+1} - Epoch {epoch+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
+
+            if test_loss < best_loss:
+                best_loss = test_loss
+                patience_counter = 0
+                best_model_state = model.state_dict()
+            else:
+                patience_counter += 1
+                if patience_counter >= args.early_stopping:
+                    print("Early stopping triggered.")
+                    break
+        # test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, alpha, temperature)
+        # print(f"Fold {fold+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
 
     # Retrain on all data
     print("Retraining on all data...")
     all_ds = ContrastiveChunkedDataset(args.embedding_dir, sample_ids, labels_known, is_capsule)
-    all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True)
+    all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
     model_final = TransformerContrastiveHead(
-        input_dim=all_ds.embedding_dim,
-        output_dim=args.output_dim,
-        max_len=all_ds.max_len,
-        nhead=args.nhead,
-        num_layers=args.num_layers
+        input_dim=embedding_dim,
+        output_dim=output_dim,
+        nhead=nhead,
+        num_layers=num_layers
     ).to(device)
 
     optimizer = torch.optim.AdamW(model_final.parameters(), lr=args.lr)
     ce_loss_fn = nn.CrossEntropyLoss()
     for epoch in tqdm(range(args.epochs), desc="Final Training"):
-        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, loss_function, args.alpha, args.temperature)
+        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, loss_function, alpha, temperature)
 
     torch.save(model_final.state_dict(), args.output)
     print(f"Saved final model to {args.output}")

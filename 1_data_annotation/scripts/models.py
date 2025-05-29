@@ -29,11 +29,10 @@ class ContrastiveChunkedDataset(Dataset):
         """
         self.embedding_dir = embeddings_dir
         self.sample_ids = sampled_ids
-        self.serotypes = serotype_labels["Serotype"].astype(str).to_list()
+        self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
-        self.is_capsule = (serotype_labels["Serotype"] != "NON-CBL").astype(int).to_list()
 
-        assert serotype_labels.index.isin([f.split(".")[0] for f in os.listdir(embeddings_dir) if f.endswith('.npy')]).all(), \
+        assert pd.Series(self.sample_ids).isin([f.split(".")[0] for f in os.listdir(embeddings_dir) if f.endswith('.npy')]).all(), \
             "At least one sample in serotype_labels does not have a corresponding embedding file."
 
     def __len__(self) -> int:
