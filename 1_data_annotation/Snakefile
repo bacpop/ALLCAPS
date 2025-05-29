@@ -161,6 +161,7 @@ rule train_contrastive_transformer:
             --batch_size {params.batch_size} \
             --lr {params.lr} \
             --model_params '{config[model_params]}' \
+            --labeled_only \
             --hierarchical_loss
         """
 ################################################################################
