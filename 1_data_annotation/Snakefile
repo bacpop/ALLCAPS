@@ -10,6 +10,7 @@ rule all:
         f"{RESULTS_DIR}/base_embeddings_chunked",
         f"{RESULTS_DIR}/base_umap.pdf",
         f"{RESULTS_DIR}/contrastive_head.pth",
+        f"{RESULTS_DIR}/contrastive_model.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
         f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
@@ -138,6 +139,30 @@ rule train_contrastive:
             --hierarchical-loss
         """
 
+rule train_contrastive_transformer:
+    input:
+        embeddings=f"{RESULTS_DIR}/base_embeddings_chunked",
+        labels=config["labels"]
+    output:
+        protected(f"{RESULTS_DIR}/contrastive_model.pth")
+    params:
+        device=config["device"],
+        epochs=config["epochs"],
+        batch_size=config["batch_size"],
+        lr=config["lr"]
+    shell:
+        """
+        python scripts/contrastive_transformer.py \
+            --embedding_dir {input.embeddings} \
+            --labels {input.labels} \
+            --output {output} \
+            --device {params.device} \
+            --epochs {params.epochs} \
+            --batch_size {params.batch_size} \
+            --lr {params.lr} \
+            --model_params '{config[model_params]}' \
+            --hierarchical_loss
+        """
 ################################################################################
 # Use the trained contrastive head to transform embeddings
 ################################################################################

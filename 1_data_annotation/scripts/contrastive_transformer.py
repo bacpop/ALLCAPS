@@ -3,24 +3,23 @@ import json
 import wandb
 import argparse
 from tqdm import tqdm
+from functools import partial
 
 import numpy as np
 import pandas as pd
 
 import torch
 from torch import nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from transformers import AutoTokenizer
 from sklearn.model_selection import StratifiedKFold
 
-from models import TransformerCapsuleClassifier, ContrastiveChunkedDataset
-from utils import supervised_contrastive_loss, hierarchical_contrastive_loss
+from models import TransformerContrastiveHead, ContrastiveChunkedDataset
+from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group
 
 
 EPS = 1e-9
-OUTPUT_DIM = 128
+DEFAULT_OUTPUT_DIM = 128
 DEFAULT_LR = 2e-5
 DEFAULT_EPOCHS = 10
 DEFAULT_BATCH_SIZE = 32
@@ -35,23 +34,24 @@ DEFAULT_CONTRASTIVE_LOSS_RATIO = 0.4
 
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
+NONCBL_LABEL = "NON-CBL"  # TODO: Make this a parameter
 WANDB_PROJECT_NAME = "contrastive-inference"
 
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fasta", required=True)
+    parser.add_argument("--embedding_dir", required=True, help="Directory containing chunked embeddings in npy format.")
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--labels", required=True)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
-    parser.add_argument("--model-params", type=str, default="{}",
+    parser.add_argument("--model_params", type=str, default="{}",
                         help="JSON string of model parameters (output_dim, num_layers, nhead, lr, alpha, temperature, etc.)")
-    parser.add_argument("--skip-labels", type=str, default="",
+    parser.add_argument("--skip_labels", type=str, default="",
                         help="Comma-separated list of labels to skip in training.")
-    parser.add_argument("--hierarchical-loss", action="store_true",
+    parser.add_argument("--hierarchical_loss", action="store_true",
                         help="Use weighted (coarse, fine) labels for training.")
     args = parser.parse_args()
 
@@ -79,6 +79,71 @@ def collate_fn(batch):
     return pad_sequence([torch.tensor(item) for item in batch], batch_first=True)
 
 
+def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
+    model.train()
+    total_loss = 0.0
+    for batch in loader:
+        capsule_label = batch['is_capsule'].cuda()
+        serotype_label = batch['serotype']
+        capsule_mask = (capsule_label == 1)
+
+        logits, embeddings = model(batch['embedding'].cuda())
+
+        ce_loss = ce_loss_fn(logits, capsule_label)
+
+        if capsule_mask.sum() > 1:
+            contrastive_loss = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+        else:
+            contrastive_loss = torch.tensor(0.0, device=ce_loss.device)
+
+        loss = ce_loss + alpha * contrastive_loss
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        wandb.log({
+            "train_loss": loss.item(),
+            "ce_loss": ce_loss.item(),
+            "contrastive_loss": contrastive_loss.item(),
+        })
+        total_loss += loss.item()
+    return total_loss / len(loader)
+
+
+def evaluate(model, loader, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
+    model.eval()
+    total_loss = 0.0
+    correct = 0
+    total = 0
+    with torch.no_grad():
+        for batch in loader:
+            capsule_label = batch['is_capsule'].cuda()
+            serotype_label = batch['serotype']
+            capsule_mask = (capsule_label == 1)
+
+            logits, embeddings = model(batch['embedding'].cuda())
+            ce_loss = ce_loss_fn(logits, capsule_label)
+
+            if capsule_mask.sum() > 1:
+                contrastive_loss = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+            else:
+                contrastive_loss = torch.tensor(0.0, device=ce_loss.device)
+
+            loss = ce_loss + alpha * contrastive_loss
+            total_loss += loss.item()
+
+            _, predicted = torch.max(logits, 1)
+            correct += (predicted == capsule_label).sum().item()
+            total += capsule_label.size(0)
+
+    accuracy = correct / total if total > 0 else 0.0
+    wandb.log({
+        "test_loss": total_loss / len(loader),
+        "accuracy": accuracy,
+    })
+    return total_loss / len(loader), accuracy
+
+
 def main(args):
     device = args.device
     random_state = args.model_params.get("random_state", 42)
@@ -89,7 +154,7 @@ def main(args):
     num_layers = args.model_params.get("num_layers", DEFAULT_NUM_LAYERS)
     nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
     alpha = args.model_params.get("alpha", DEFAULT_CONTRASTIVE_LOSS_RATIO)
-    output_dim = args.model_params.get("output_dim", OUTPUT_DIM)
+    output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
 
     wandb.config.update({
         "random_state": random_state,
@@ -106,96 +171,77 @@ def main(args):
         "output_dim": output_dim,
     })
     
-    # ----------------- Load Data ---------------------------
     print("Loading data...")
-    data = pd.read_csv("your_data.csv")
-    sequences = data['sequence'].tolist()
-    capsule_labels = data['capsule_label'].values  # TODO binary labels
-    serotype_labels = data['serotype_label'].values
+    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
+    indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
+    if args.skip_labels:
+        print(f"Skipping labels: {args.skip_labels}")
+        indices &= ~labels['Serotype'].isin(args.skip_labels)
 
-    for fold, (train_idx, test_idx) in enumerate(skf.split(sequences, capsule_labels)):
-        print(f"Fold {fold+1}")
+    fine_labels = labels['Serotype'][indices].values.tolist()
+    if args.hierarchical_loss:
+        print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
+        coarse_labels = labels['Serotype'].apply(map_serotype_to_group).tolist()
+        labels_known = list(zip(coarse_labels, fine_labels))
+        loss_function = partial(hierarchical_contrastive_loss, weight_fine=args.weight_fine, weight_coarse=args.weight_coarse)
+    else:
+        labels_known = fine_labels
+        loss_function = supervised_contrastive_loss
 
-        train_ds = ContrastiveChunkedDataset(np.array(sequences)[train_idx], capsule_labels[train_idx], serotype_labels[train_idx])
-        test_ds = ContrastiveChunkedDataset(np.array(sequences)[test_idx], capsule_labels[test_idx], serotype_labels[test_idx])
+    sample_ids = labels.index[indices].tolist()
+    is_capsule = (labels['Serotype'] != NONCBL_LABEL).astype(int)[indices].tolist()
+
+    skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
+    for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(labels_known)), labels_known)):  # Dummy X
+        print(f"Fold {fold+1} / {k_folds}")
+
+        train_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[train_idx],
+                                             np.array(labels_known)[train_idx], np.array(is_capsule)[train_idx])
+        test_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[test_idx],
+                                            np.array(labels_known)[test_idx], np.array(is_capsule)[test_idx])
 
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
         test_loader = DataLoader(test_ds, batch_size=args.batch_size)
 
-        model = TransformerCapsuleClassifier(args.model_name).to(device)
+        model = TransformerContrastiveHead(
+            input_dim=train_ds.embedding_dim,
+            output_dim=args.output_dim,
+            max_len=train_ds.max_len,
+            nhead=args.nhead,
+            num_layers=args.num_layers
+        ).to(device)
+
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         ce_loss_fn = nn.CrossEntropyLoss()
 
-        model.train()
+        for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold+1}"):
+            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, loss_function, args.alpha, args.temperature)
 
-        for epoch in range(args.epochs):
-            for batch in train_loader:
-                encoded = tokenizer(batch['sequence'], padding=True, truncation=True, return_tensors='pt').to('cuda')
-                capsule_label = batch['is_capsule'].cuda()
-                serotype_label = batch['serotype'].cuda()
-                capsule_mask = (capsule_label == 1)
+        test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, args.alpha, args.temperature)
+        print(f"Fold {fold+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
 
-                logits, embeddings = model(encoded['input_ids'], encoded['attention_mask'])
+    # Retrain on all data
+    print("Retraining on all data...")
+    all_ds = ContrastiveChunkedDataset(args.embedding_dir, sample_ids, labels_known, is_capsule)
+    all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True)
 
-                ce_loss = ce_loss_fn(logits, capsule_label)
+    model_final = TransformerContrastiveHead(
+        input_dim=all_ds.embedding_dim,
+        output_dim=args.output_dim,
+        max_len=all_ds.max_len,
+        nhead=args.nhead,
+        num_layers=args.num_layers
+    ).to(device)
 
-                if capsule_mask.sum() > 1:
-                    contr_loss = nt_xent_loss(embeddings[capsule_mask], serotype_label[capsule_mask])
-                else:
-                    contr_loss = torch.tensor(0.0, device=ce_loss.device)
+    optimizer = torch.optim.AdamW(model_final.parameters(), lr=args.lr)
+    ce_loss_fn = nn.CrossEntropyLoss()
+    for epoch in tqdm(range(args.epochs), desc="Final Training"):
+        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, loss_function, args.alpha, args.temperature)
 
-                loss = ce_loss + alpha * contr_loss
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-    # TODO retrain on all data
-    model_final = None
     torch.save(model_final.state_dict(), args.output)
     print(f"Saved final model to {args.output}")
-
-
-def main(args):
-    with open(args.pairs_file, 'r') as f:
-        pairs = [line.strip().split(',') for line in f if line.strip()]
-
-    dataset = ContrastiveChunkedDataset(pairs)
-    loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-
-    # Infer input dim from first file
-    sample = torch.tensor(np.load(pairs[0][0]))
-    input_dim = sample.shape[1]
-
-    model = TransformerContrastiveHead(input_dim, args.output_dim).to(args.device)
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
-    for epoch in range(args.epochs):
-        model.train()
-        total_loss = 0
-        for xb_left, xb_right in loader:
-            xb_left = xb_left.to(args.device)
-            xb_right = xb_right.to(args.device)
-
-            z_i = model(xb_left)
-            z_j = model(xb_right)
-
-            loss = contrastive_loss(z_i, z_j, temperature=args.temperature)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-            total_loss += loss.item()
-
-        avg_loss = total_loss / len(loader)
-        print(f"Epoch {epoch+1}/{args.epochs} - Loss: {avg_loss:.4f}")
-        wandb.log({"epoch": epoch + 1, "loss": avg_loss})
-
-    torch.save(model.state_dict(), args.output)
-    wandb.save(args.output)
 
 
 if __name__ == "__main__":
