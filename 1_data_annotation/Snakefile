@@ -12,6 +12,7 @@ rule all:
         f"{RESULTS_DIR}/contrastive_head.pth",
         f"{RESULTS_DIR}/contrastive_model.pth",
         f"{RESULTS_DIR}/contrastive_embeddings.npy",
+        f"{RESULTS_DIR}/contrastive_embeddings.npz",
         f"{RESULTS_DIR}/contrastive_umap.pdf",
         f"{RESULTS_DIR}/knn_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
@@ -52,7 +53,7 @@ rule embed_transformer_chunked:
         stride_ratio=0.5  # TODO: add chunk size and overlap to config
     shell:
         """
-        python scripts/infer_chunked_transformer.py \
+        python scripts/embed_chunked_transformer.py \
             --fasta {input.fasta} \
             --out_dir {output} \
             --model_name {params.model_name} \
@@ -152,7 +153,7 @@ rule train_contrastive_transformer:
         lr=config["lr"]
     shell:
         """
-        python scripts/contrastive_transformer.py \
+        python scripts/train_contrastive_transformer.py \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -182,6 +183,29 @@ rule embed_contrastive:
             --head {input.head} \
             --output {output} \
             --device {params.device}
+        """
+
+rule embed_contrastive_chunked:
+    input:
+        embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
+        labels=config["labels"],
+        model=f"{RESULTS_DIR}/contrastive_model.pth"
+    output:
+        f"{RESULTS_DIR}/contrastive_embeddings.npz"
+    params:
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_params=config["model_params"]
+    shell:
+        """
+        python scripts/infer_contrastive_transformer.py \
+            --embeddings_dir {input.embeddings} \
+            --labels {input.labels} \
+            --model {input.model} \
+            --output {output} \
+            --device {params.device} \
+            --batch_size {params.batch_size} \
+            --model_params '{params.model_params}'
         """
 
 rule knn_inference:
