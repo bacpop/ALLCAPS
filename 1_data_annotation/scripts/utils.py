@@ -1,6 +1,7 @@
 import re
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 
 EPS = 1e-9
 
@@ -175,3 +176,18 @@ def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weigh
     loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
     loss = loss_terms.mean()
     return loss
+
+
+def collate_fn(batch):
+    embeddings = [item['embedding'] for item in batch]  # [(L_i, D), ...]
+    serotypes = [item['serotype'] for item in batch]
+    is_capsule = torch.tensor([item['is_capsule'] for item in batch], dtype=torch.long)
+
+    padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
+
+    return {
+        'embedding': padded_embeddings,   # tensor [B, L_max, D]
+        'serotype': serotypes,            # list[str]
+        'is_capsule': is_capsule          # tensor [B]
+    }
+

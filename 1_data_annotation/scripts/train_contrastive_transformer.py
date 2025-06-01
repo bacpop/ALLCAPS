@@ -11,17 +11,17 @@ import pandas as pd
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
-from torch.nn.utils.rnn import pad_sequence
 from sklearn.model_selection import StratifiedKFold
 
 from models import TransformerContrastiveHead, ContrastiveChunkedDataset
-from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group
+from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
 
 EPS = 1e-9
 DEFAULT_OUTPUT_DIM = 128
 DEFAULT_LR = 2e-5
-DEFAULT_EPOCHS = 10
+DEFAULT_EPOCHS = 100
+DEFAULT_EARLY_STOPPING = 10
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_TEMPERATURE = 0.07
 DEFAULT_KFOLDS = 5
@@ -32,7 +32,6 @@ DEFAULT_NHEAD = 4
 DEFAULT_EMBEDDING_DIM = 2560  # Nucleotide Transformer output TODO
 DEFAULT_DIM_FEEDFORWARD = 512
 DEFAULT_CONTRASTIVE_LOSS_RATIO = 0.4
-DEFAULT_EARLY_STOPPING = 5
 
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
@@ -79,23 +78,9 @@ def parse_args():
     return args
 
 
-def collate_fn(batch):
-    embeddings = [item['embedding'] for item in batch]  # [(L_i, D), ...]
-    serotypes = [item['serotype'] for item in batch]
-    is_capsule = torch.tensor([item['is_capsule'] for item in batch], dtype=torch.long)
-
-    padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
-
-    return {
-        'embedding': padded_embeddings,   # tensor [B, L_max, D]
-        'serotype': serotypes,            # list[str]
-        'is_capsule': is_capsule          # tensor [B]
-    }
-
-
 def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
     model.train()
-    total_loss = 0.0
+    total_loss, ce_loss, contrastive_loss = 0.0, 0.0, 0.0
     for batch in loader:
         capsule_label = batch['is_capsule'].cuda()
         serotype_label = batch['serotype']
@@ -115,11 +100,6 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, a
         loss.backward()
         optimizer.step()
 
-        # wandb.log({
-        #     "train_loss": loss.item(),
-        #     "ce_loss": ce_loss.item(),
-        #     "contrastive_loss": contrastive_loss.item(),
-        # })
         total_loss += loss.item()
         ce_loss += ce_loss.item()
         contrastive_loss += contrastive_loss.item()
@@ -249,14 +229,11 @@ def main(args):
             if test_loss < best_loss:
                 best_loss = test_loss
                 patience_counter = 0
-                best_model_state = model.state_dict()
             else:
                 patience_counter += 1
                 if patience_counter >= args.early_stopping:
                     print("Early stopping triggered.")
                     break
-        # test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, alpha, temperature)
-        # print(f"Fold {fold+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
 
     # Retrain on all data
     print("Retraining on all data...")
@@ -274,6 +251,10 @@ def main(args):
     ce_loss_fn = nn.CrossEntropyLoss()
     for epoch in tqdm(range(args.epochs), desc="Final Training"):
         train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, loss_function, alpha, temperature)
+    
+    print("Evaluating final model on all data...")
+    final_loss, final_accuracy = evaluate(model_final, all_loader, ce_loss_fn, loss_function, alpha, temperature)
+    print(f"Final model - Loss: {final_loss:.4f}, Accuracy: {final_accuracy:.4f}")
 
     torch.save(model_final.state_dict(), args.output)
     print(f"Saved final model to {args.output}")
