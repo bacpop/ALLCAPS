@@ -186,6 +186,7 @@ def collate_fn(batch):
     padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
 
     return {
+        'sample_id': [item['sample_id'] for item in batch],  # list[str]
         'embedding': padded_embeddings,   # tensor [B, L_max, D]
         'serotype': serotypes,            # list[str]
         'is_capsule': is_capsule          # tensor [B]

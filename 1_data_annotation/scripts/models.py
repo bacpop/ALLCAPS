@@ -43,6 +43,7 @@ class ContrastiveChunkedDataset(Dataset):
         # if not os.path.exists(embedding_path):
         #     raise FileNotFoundError(f"Embedding file not found at {embedding_path}")
         return {
+            'sample_id': self.sample_ids[idx],
             'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
             'serotype': self.serotypes[idx],
             'is_capsule': self.is_capsule[idx]
