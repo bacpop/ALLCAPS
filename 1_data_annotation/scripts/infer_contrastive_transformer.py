@@ -14,6 +14,8 @@ from models import TransformerContrastiveHead, ContrastiveChunkedDataset
 from utils import collate_fn
 
 
+MISSING_LABEL = "Non-typeable"
+NONCBL_LABEL = "NON-CBL"
 DEFAULT_OUTPUT_DIM = 128
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_NUM_LAYERS = 1
@@ -31,11 +33,21 @@ def main(args):
     
     print(f"Loading embeddings from: {args.embeddings_dir}")
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
+
+    is_duplicate = labels.duplicated()
+    if is_duplicate.any():
+        print("Dropping duplicate label rows...")
+        labels = labels[~is_duplicate]
+
+    known_indices = labels['Serotype'] != MISSING_LABEL
+    labels = labels[known_indices]
+
     sequences = labels.index.tolist()
     serotype_labels = labels["Serotype"].tolist()
-    capsule_labels = (labels["Serotype"] != "NON-CBL").astype(int).tolist()
+    capsule_labels = (labels["Serotype"] != NONCBL_LABEL).astype(int).tolist()
 
-    dataset = ContrastiveChunkedDataset(args.embeddings_dir, sequences, capsule_labels, serotype_labels)
+    dataset = ContrastiveChunkedDataset(args.embeddings_dir, sequences, serotype_labels, capsule_labels)
     loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
 
     print(f"Using model: {args.model}")
@@ -55,7 +67,7 @@ def main(args):
     with torch.no_grad():
         for batch in tqdm(loader, desc="Extracting embeddings"):
             inputs = batch["embedding"].to(device)
-            sample_ids = batch["serotype"]  # or use another ID field
+            sample_ids = batch["sample_id"]
 
             _, z = model(inputs)  # contrastive embeddings
             z = z.cpu().numpy()
