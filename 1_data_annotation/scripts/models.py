@@ -1,4 +1,5 @@
 import os
+import glob
 import numpy as np
 import pandas as pd
 
@@ -32,16 +33,19 @@ class ContrastiveChunkedDataset(Dataset):
         self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
 
-        assert pd.Series(self.sample_ids).isin([f.split(".")[0] for f in os.listdir(embeddings_dir) if f.endswith('.npy')]).all(), \
-            "At least one sample in serotype_labels does not have a corresponding embedding file."
+        all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
+        file_names = [os.path.basename(f) for f in all_embeddings]
+        assert pd.Series(self.sample_ids).isin([f.split(".")[0] for f in file_names]).all(), \
+            "Some serotype_labels do not have a corresponding embedding file: {}".format(
+                set(self.sample_ids) - set([f.split(".")[0] for f in file_names])
+            )
 
     def __len__(self) -> int:
         return len(self.sample_ids)
     
     def __getitem__(self, idx):
-        embedding_path = os.path.join(self.embedding_dir, f"{self.sample_ids[idx]}.npy")
-        # if not os.path.exists(embedding_path):
-        #     raise FileNotFoundError(f"Embedding file not found at {embedding_path}")
+        subdir = "cbl" if self.is_capsule[idx] else "non_cbl"
+        embedding_path = os.path.join(self.embedding_dir, subdir, f"{self.sample_ids[idx]}.npy")
         return {
             'sample_id': self.sample_ids[idx],
             'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),

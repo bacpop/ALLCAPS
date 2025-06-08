@@ -178,6 +178,17 @@ def main(args):
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
 
+    noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
+    if not os.path.exists(noncbl_subdir):
+        print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
+        non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
+        non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
+        
+        non_cbl_labels = pd.DataFrame({
+            'Serotype': [NONCBL_LABEL] * len(non_cbl_embeddings),
+        }, index=non_cbl_embeddings)
+        labels = pd.concat([labels, non_cbl_labels], axis=0)
+
     indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
     if args.skip_labels:
         print(f"Skipping labels: {args.skip_labels}")
