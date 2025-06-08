@@ -221,7 +221,7 @@ rule knn_inference:
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --knn_k {config[knn_k]} \
-            --output-dir {RESULTS_DIR}
+            --output_dir {RESULTS_DIR}
         """
 
 ################################################################################

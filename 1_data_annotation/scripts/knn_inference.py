@@ -18,8 +18,13 @@ MIN_COUNT = 2  # Minimum count for a label to be considered valid
 def main(args):
     print(f"Loading contrastive embeddings and labels...")
     X = np.load(args.embeddings)  # shape (N, new_dim)
+    is_X_npz = isinstance(X, np.lib.npyio.NpzFile)
     labels = pd.read_csv(args.labels, sep="\t")
-    assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
+    
+    if not is_X_npz:
+        assert len(X) == len(labels), "Number of embeddings and labels do not match."
+        # TODO add sanity test for npz
+
 
     labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
 
@@ -27,7 +32,7 @@ def main(args):
     is_duplicate = labels.duplicated()
     if is_duplicate.any():
         print("Dropping duplicate label rows...")
-        labels, X = labels[~is_duplicate], X[~is_duplicate]
+        labels = labels[~is_duplicate]
 
     known_indices = labels['Serotype'] != MISSING_LABEL
 
@@ -37,8 +42,13 @@ def main(args):
         print(f"Dropping serotypes with less than {MIN_COUNT} samples:", *underrep_labels.to_list())
         known_indices &= ~labels['Serotype'].isin(underrep_labels)
 
-    X_known, labels_known = X[known_indices], labels[known_indices]["Serotype"]
-    print(f"Total samples: {X.shape[0]}, known-label samples: {X_known.shape[0]}")
+    labels_known = labels[known_indices]["Serotype"]
+    if is_X_npz:
+        X_known = np.array([X[key] for key in labels[known_indices]["Public_name"]])
+    else:
+        X = X[~is_duplicate]
+        X_known = X[known_indices]
+    print(f"Known-label samples: {X_known.shape[0]}")
 
     print(f"Training k-NN with k={args.knn_k} on standardized embeddings...")
     
@@ -71,11 +81,11 @@ def main(args):
 def parse_args():
     parser = argparse.ArgumentParser(description="KNN serotype inference on precomputed contrastive embeddings.")
     parser.add_argument("--embeddings", required=True,
-                        help="Path to the final contrastive embeddings (.npy) of shape (N, new_dim).")
+                        help="Path to the final contrastive embeddings (.npy/.npz) of shape (N, new_dim).")
     parser.add_argument("--labels", required=True, help="Path to labels")
     parser.add_argument("--knn_k", type=int, default=DEFAULT_KNN_K, help="Number of neighbors for k-NN.")
     parser.add_argument("--test_size", type=float, default=DEFAULT_TEST_SIZE, help="Fraction of data for test split.")
-    parser.add_argument("--output-dir", required=True, help="Directory to save the text classification report in.")
+    parser.add_argument("--output_dir", required=True, help="Directory to save the text classification report in.")
     return parser.parse_args()
 
 
