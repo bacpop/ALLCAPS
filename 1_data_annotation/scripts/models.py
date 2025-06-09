@@ -44,7 +44,7 @@ class ContrastiveChunkedDataset(Dataset):
         return len(self.sample_ids)
     
     def __getitem__(self, idx):
-        subdir = "cbl" if self.is_capsule[idx] else "non_cbl"
+        subdir = "cbl" if self.is_capsule[idx] else "non-cbl"
         embedding_path = os.path.join(self.embedding_dir, subdir, f"{self.sample_ids[idx]}.npy")
         return {
             'sample_id': self.sample_ids[idx],

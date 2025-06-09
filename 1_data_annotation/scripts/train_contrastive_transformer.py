@@ -179,7 +179,7 @@ def main(args):
     labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
 
     noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
-    if not os.path.exists(noncbl_subdir):
+    if os.path.exists(noncbl_subdir):
         print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
         non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
         non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
