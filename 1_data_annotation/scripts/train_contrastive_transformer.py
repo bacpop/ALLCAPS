@@ -191,8 +191,9 @@ def main(args):
 
     indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
     if args.skip_labels:
-        print(f"Skipping labels: {args.skip_labels}")
-        indices &= ~labels['Serotype'].isin(args.skip_labels)
+        skip_indices = labels['Serotype'].isin(args.skip_labels)
+        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
+        indices &= ~skip_indices
 
     fine_labels = labels['Serotype'][indices].values.tolist()
     if args.hierarchical_loss:
