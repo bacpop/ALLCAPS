@@ -22,3 +22,18 @@ snakemake --configfile <path/to/configuration> --cores 1  # Or more if you'd lik
 
 The whole DAG of the rules in the workflow is visualized [here](dag.pdf).
 > The graph is generated using Graphviz by `snakemake --forceall --dag | dot -Tpdf > dag.pdf`
+
+### W&B
+This script benefits from [W&B](https://wandb.ai/site/models/) dashboard for monitoring each run. Check out their website for installation and login tutorials.
+
+If you plan to run the script through the Snakemake pipeline, make sure you initialize the tool in offline mode:
+
+```bash
+export WANDB_MODE=offline
+```
+
+This ensures you do not break logging. Later on, you can sync the offline logs with your dashboard using:
+
+```bash
+wandb sync --sync-all
+```
