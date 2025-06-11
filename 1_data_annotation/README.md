@@ -41,3 +41,18 @@ To run the workflow, ensure the following dependencies are installed:
 ```bash
 snakemake --configfile <path/to/configuration> --cores 1
 ```
+
+### W&B
+This script benefits from [W&B](https://wandb.ai/site/models/) dashboard for monitoring each run. Check out their website for installation and login tutorials.
+
+If you plan to run the script through the Snakemake pipeline, make sure you initialize the tool in offline mode:
+
+```bash
+export WANDB_MODE=offline
+```
+
+This ensures you do not break logging. Later on, you can sync the offline logs with your dashboard using:
+
+```bash
+wandb sync --sync-all
+```

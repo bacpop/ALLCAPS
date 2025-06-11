@@ -75,6 +75,10 @@ def main(args):
     print("Loading the data...")
     embeddings = np.load(args.embeddings)
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    is_emb_npz = isinstance(embeddings, np.lib.npyio.NpzFile)
+    if not is_emb_npz:
+        assert embeddings.shape[0] == labels.shape[0], "Number of embeddings and labels do not match."
+
     assert embeddings.shape[0] == labels.shape[0], "Number of embeddings and labels do not match."
 
     labels = labels \
@@ -89,7 +93,8 @@ def main(args):
         indices_mask[downsample_indices] = True
 
     print("Calculating UMAP...")
-    UMAP_embedding_df = calculate_umap(embeddings[indices_mask], labels[indices_mask], args.output)
+    X = np.array([embeddings[key] for key in labels[indices_mask]["Public_name"]]) if is_emb_npz else embeddings[indices_mask]
+    UMAP_embedding_df = calculate_umap(X, labels[indices_mask], args.output)
     print("Plotting UMAP...")
     plot_umap(UMAP_embedding_df, args.output)
 

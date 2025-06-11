@@ -1,6 +1,8 @@
 #!/usr/bin/env python
 
+import os
 import json
+import wandb
 import argparse
 import numpy as np
 import pandas as pd
@@ -12,8 +14,8 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from models import ContrastiveHead
-from utils import map_serotype_to_group
+from models import TransformerContrastiveHead
+from utils import map_serotype_to_group, supervised_contrastive_loss, hierarchical_contrastive_loss
 
 EPS = 1e-9
 DEFAULT_LR = 1e-3
@@ -22,83 +24,14 @@ DEFAULT_BATCH_SIZE = 32
 DEFAULT_TEMPERATURE = 0.07
 DEFAULT_KFOLDS = 5
 DEFAULT_WEIGHT_FINE = 1.0
-DEFAULT_WEIGHT_COARSE = 0.4
+DEFAULT_WEIGHT_COARSE = 0.6
+DEFAULT_NUM_LAYERS = 2
+DEFAULT_NHEAD = 4
+DEFAULT_DIM_FEEDFORWARD = 512
+
 MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
 LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
-
-
-def supervised_contrastive_loss(z, labels, temperature):
-    """
-    Supervised Contrastive Loss:
-      - For each anchor i, all samples j with the same label are positives.
-      - Different labels => negatives.
-      - i != j (exclude diagonal).
-    """
-    device, N = z.device, z.shape[0]
-    z = nn.functional.normalize(z, dim=1)  # Normalize embeddings for stable similarity
-    logits = z @ z.t() / temperature  # shape (N, N)
-
-    # positives_mask = torch.tensor([[(labels[i] == labels[j]) and (i != j) for j in range(N)] for i in range(N)], device=device)
-    positives_mask = torch.zeros((N, N), dtype=torch.bool, device=device)
-    for i in range(N):
-        for j in range(N):
-            if i != j and labels[i] == labels[j]:
-                positives_mask[i, j] = True
-
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
-
-    exp_logits = torch.exp(logits)
-    pos_exp = exp_logits * positives_mask
-    numerator = pos_exp.sum(dim=1)  # (N,)
-
-    den_exp = exp_logits * ~diag_mask
-    denominator = den_exp.sum(dim=1)
-
-    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
-    loss = loss_terms.mean()
-    return loss
-
-
-def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weight_coarse=0.5):
-    """
-    Hierarchical contrastive loss that assigns different weights to pairs that share:
-      (a) the same fine label (strong positive),
-      (b) the same coarse label but different fine label (partial positive),
-      (c) different coarse label (negative).
-    """
-    device, N = z.device, z.shape[0]
-    coarse_labels, fine_labels = zip(*labels)
-
-    z = nn.functional.normalize(z, dim=1)
-    logits = z @ z.t() / temperature
-
-    weight_matrix = torch.zeros((N, N), dtype=torch.float, device=device)
-    for i in range(N):
-        for j in range(N):
-            if i == j: continue  # Exclude diagonal
-            if coarse_labels[i] == coarse_labels[j]:
-                if fine_labels[i] == fine_labels[j]:
-                    weight_matrix[i, j] = weight_fine  # Strong positive
-                else:
-                    weight_matrix[i, j] = weight_coarse  # Partial positive, e.g., 15A vs 15B
-
-    # An InfoNCE-like approach, but we sum up weighted positives in the numerator:
-    #    Numerator = sum_{j} [ W[i, j] * exp(logits[i, j]) ]
-    #    Denominator = sum_{k != i} [ exp(logits[i, k]) ]
-    #    Then L_i = - log( ( numerator ) / ( denominator ) ), and final L = mean(L_i).
-
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
-
-    exp_logits = torch.exp(logits)
-    den_exp = exp_logits * ~diag_mask
-    denominator = den_exp.sum(dim=1)  # shape (N,)
-
-    num_exp = exp_logits * weight_matrix
-    numerator = num_exp.sum(dim=1)
-
-    loss_terms = -torch.log((numerator + EPS) / (denominator + EPS))
-    loss = loss_terms.mean()
-    return loss
+PROJECT_NAME = "contrastive-training"
 
 
 def train_one_epoch(model, loss_fn, X_train, labels_train, optimizer, batch_size, temperature):
@@ -178,6 +111,19 @@ def main(args):
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
     weight_fine = args.model_params.get("weight_fine", DEFAULT_WEIGHT_FINE)
     weight_coarse = args.model_params.get("weight_coarse", DEFAULT_WEIGHT_COARSE)
+    num_layers = args.model_params.get("num_layers", DEFAULT_NUM_LAYERS)
+    nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
+    dim_feedforward = args.model_params.get("dim_feedforward", DEFAULT_DIM_FEEDFORWARD)
+    wandb.config.update({
+        "random_state": random_state,
+        "k_folds": k_folds,
+        "temperature": temperature,
+        "weight_fine": weight_fine,
+        "weight_coarse": weight_coarse,
+        "num_layers": num_layers,
+        "nhead": nhead,
+        "dim_feedforward": dim_feedforward,
+    })
 
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
@@ -217,7 +163,7 @@ def main(args):
         y_val = [labels_known[i] for i in val_idx]
 
         input_dim = X_train.shape[1]
-        model = ContrastiveHead(input_dim=input_dim, output_dim=128).to(device)
+        model = TransformerContrastiveHead(input_dim, nhead, num_layers, dim_feedforward).to(device)
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
         for epoch in tqdm(range(args.epochs), desc=f"Fold {fold_idx}/{k_folds}", leave=False, position=1):
@@ -225,6 +171,11 @@ def main(args):
                                          temperature)
             val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
             tqdm.write(f"Epoch {epoch + 1}/{args.epochs}, train_loss={train_loss:.4f}, val_loss={val_loss:.4f}")
+            wandb.log({
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "epoch": epoch + 1
+            })
 
         # Final val loss after training
         final_val_loss = evaluate_loss(model, loss_function, X_val, y_val, args.batch_size, temperature)
@@ -236,9 +187,11 @@ def main(args):
     mean_metric, std_metric = fold_metrics.mean(), fold_metrics.std()
     print(f"\nCross-validation results ({k_folds}-fold):")
     print(f"Mean val_loss = {mean_metric:.4f}, Std = {std_metric:.4f}")
+    wandb.summary["mean_val_loss"] = mean_metric
+    wandb.summary["std_val_loss"] = std_metric
 
     print("\nRetraining on entire known-labeled dataset for final model...")
-    model_final = ContrastiveHead(input_dim=X_torch.shape[1], output_dim=128).to(device)
+    model_final = TransformerContrastiveHead(X_torch.shape[1], nhead, num_layers, dim_feedforward).to(device)
     optimizer_final = optim.Adam(model_final.parameters(), lr=args.lr)
 
     is_cuda = next(model_final.parameters()).is_cuda
@@ -293,4 +246,13 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    main(parse_args())
+    args = parse_args()
+    run_id = os.environ.get("SLURM_JOB_ID", os.urandom(4).hex())
+    mode = "offline" if os.environ.get("WANDB_MODE") == "offline" else "online"
+    wandb.init(
+        project=PROJECT_NAME,
+        config=args,
+        mode=mode
+    )
+    wandb.run.name = f"{PROJECT_NAME}-{run_id}"
+    main(args)
