@@ -14,8 +14,9 @@ from models import TransformerContrastiveHead, ContrastiveChunkedDataset
 from utils import collate_fn
 
 
-MISSING_LABEL = "Non-typeable"
-NONCBL_LABEL = "NON-CBL"
+DEFAULT_MISSING_LABEL = "Non-typeable"
+DEFAULT_NONCBL_LABEL = "NON-CBL"
+DEFAULT_SEP = "|"
 DEFAULT_OUTPUT_DIM = 128
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_NUM_LAYERS = 1
@@ -28,24 +29,42 @@ def main(args):
     nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
     output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
-
+    missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
+    noncbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
+    sep = args.model_params.get("sep", DEFAULT_SEP)
+    
     device = torch.device(args.device)
     
     print(f"Loading embeddings from: {args.embeddings_dir}")
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
-    labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
+    labels['Serotype'] = labels['Serotype'].fillna(missing_label)
 
     is_duplicate = labels.duplicated()
     if is_duplicate.any():
         print("Dropping duplicate label rows...")
         labels = labels[~is_duplicate]
-
-    known_indices = labels['Serotype'] != MISSING_LABEL
+    if args.skip_labels:
+        indices_to_skip = labels['Serotype'].isin(args.skip_labels)
+        print(f"Skipping labels: {args.skip_labels}, {indices_to_skip.sum()} rows will be skipped.")
+        labels = labels[~indices_to_skip]
+    
+    known_indices = labels['Serotype'] != missing_label
     labels = labels[known_indices]
+
+    noncbl_subdir = os.path.join(args.embeddings_dir, "non-cbl")
+    if os.path.exists(noncbl_subdir):
+        print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
+        non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
+        non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
+        
+        non_cbl_labels = pd.DataFrame({
+            'Serotype': [noncbl_label] * len(non_cbl_embeddings),
+        }, index=non_cbl_embeddings)
+        labels = pd.concat([labels, non_cbl_labels], axis=0)
 
     sequences = labels.index.tolist()
     serotype_labels = labels["Serotype"].tolist()
-    capsule_labels = (labels["Serotype"] != NONCBL_LABEL).astype(int).tolist()
+    capsule_labels = (labels["Serotype"] != noncbl_label).astype(int).tolist()
 
     dataset = ContrastiveChunkedDataset(args.embeddings_dir, sequences, serotype_labels, capsule_labels)
     loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
@@ -68,12 +87,14 @@ def main(args):
         for batch in tqdm(loader, desc="Extracting embeddings"):
             inputs = batch["embedding"].to(device)
             sample_ids = batch["sample_id"]
+            is_capsule = batch["is_capsule"].to(device)
 
             _, z = model(inputs)  # contrastive embeddings
             z = z.cpu().numpy()
 
-            for emb, sid in zip(z, sample_ids):
-                all_embeddings[sid] = emb
+            for emb, sid, cbl in zip(z, sample_ids, is_capsule):
+                pref = "cbl" if cbl else "non-cbl"
+                all_embeddings[f"{pref}{sep}{sid}"] = emb
 
     np.savez_compressed(args.output, **all_embeddings)
     print(f"Embeddings saved to: {args.output}")
@@ -88,6 +109,8 @@ def parse_args():
     parser.add_argument("--device", required=True)
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--model_params", type=str, default="{}")
+    parser.add_argument("--skip_labels", type=str, default="",
+                        help="Comma-separated list of labels to skip in training.")
     args = parser.parse_args()
     try:
         args.model_params = json.loads(args.model_params)
@@ -99,7 +122,13 @@ def parse_args():
         args.model_params = {}
     finally:
         print("Model parameters:", args.model_params)
-    
+
+    try:
+        args.skip_labels = [label.strip() for label in args.skip_labels.split(",") if label.strip()]
+    except ValueError:
+        print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
+        args.skip_labels = []
+
     return args
 
 
