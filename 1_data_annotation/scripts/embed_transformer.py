@@ -7,7 +7,7 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM
 from Bio import SeqIO
 from tqdm import tqdm
 
-DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
+from consts import DEFAULT_MODEL
 
 
 def read_fasta(file_path):
@@ -44,7 +44,7 @@ def get_transformer_embeddings(
         max_length = tokenizer.model_max_length
 
     chunk_size = min(chunk_size, max_length)
-    overlap = chunk_size // 4  # 25% overlap  TODO try 50
+    overlap = chunk_size // 4  # 25% overlap
 
     all_sequence_embeddings = []
 

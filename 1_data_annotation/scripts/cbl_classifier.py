@@ -8,16 +8,10 @@ import pandas as pd
 from sklearn.metrics import classification_report, f1_score
 
 from models import TransformerContrastiveHead
-
-
-DEFAULT_MISSING_LABEL = "Non-typeable"
-DEFAULT_NONCBL_LABEL = "NON-CBL"
-DEFAULT_SEP = "|"
-DEFAULT_OUTPUT_DIM = 128
-DEFAULT_BATCH_SIZE = 32
-DEFAULT_NUM_LAYERS = 1
-DEFAULT_NHEAD = 4
-DEFAULT_EMBEDDING_DIM = 2560  # Nucleotide Transformer output TODO
+from consts import (
+    DEFAULT_NUM_LAYERS, DEFAULT_NHEAD, DEFAULT_OUTPUT_DIM,
+    DEFAULT_EMBEDDING_DIM, DEFAULT_SEP, DEFAULT_BATCH_SIZE,
+)
 
 
 def main(args):

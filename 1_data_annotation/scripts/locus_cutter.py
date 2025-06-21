@@ -5,8 +5,6 @@
 # - utilize multi-threading,
 # - store non-CBL sequences for downstream tasks.
 
-from concurrent.futures import ProcessPoolExecutor, as_completed
-
 import mappy as mp
 from Bio import SeqIO
 from Bio.Seq import Seq
@@ -14,14 +12,17 @@ from Bio.SeqRecord import SeqRecord
 
 import os
 import gzip
-import tqdm
 import argparse
+from tqdm import tqdm
 import numpy as np
 from functools import partial
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+
+from consts import RND_STATE
 
 
-np.random.seed(42)
+np.random.seed(RND_STATE)
 
 def extract_public_name(file_name):
     try:
@@ -241,7 +242,7 @@ def parallel_cut_loci(file_list, seq_pair_dict, cutoff):
     with ProcessPoolExecutor(max_workers=8) as executor:
         futures = [executor.submit(process_file, file, seq_pair_dict, cutoff)
                    for file in file_list]
-        for future in tqdm.tqdm(as_completed(futures), total=len(futures)):
+        for future in tqdm(as_completed(futures), total=len(futures)):
             cut_records, partial_found, not_found, non_cbl_records = future.result()
             all_cut_records.extend(cut_records)
             all_partial_found.update(partial_found)

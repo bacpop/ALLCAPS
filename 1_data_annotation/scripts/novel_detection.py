@@ -7,7 +7,8 @@ from Bio import SeqIO
 from scipy.stats import beta, norm
 from sklearn.metrics.pairwise import cosine_distances
 
-MIN_SEROGROUP_SIZE = 40  # Minimum number of samples in a serogroup to be considered for novelty detection
+from consts import DEFAULT_MIN_SEROGROUP_SIZE
+
 
 def transformer_embedding(sequence: str) -> np.ndarray:
     raise NotImplementedError("This function should be implemented to return the embedding of the sequence.")
@@ -60,7 +61,7 @@ def generate_verdict(results: pd.DataFrame, beta_params: dict, normal_params: di
     # results.groupby("Serogroup")["Novel"].value_counts().unstack(fill_value=0)
 
 
-def main(args): 
+def main(args):
     print("Loading embeddings and labels...")
     embeddings = np.load(args.embeddings)
     labels = pd.read_csv(args.labels, index_col=0)["Serotype"]
@@ -137,6 +138,9 @@ def parse_args():
     parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")
     parser.add_argument("--distances", type=str, required=True, help="Path to the distances file.")
     parser.add_argument("--distributions", type=str, default="distributions_params.json", help="Path to the distributions parameters file.")
+    parser.add_argument("--min_serogroup_size", type=int, default=DEFAULT_MIN_SEROGROUP_SIZE,
+        help="Minimum number of samples in a serogroup to be considered for novelty detection."
+    )
     parser.add_argument("--thresholds", type=str, default="0.05,0.1,0.95,0.98",
         help="Comma-separated thresholds for novelty detection."
             " TODO: explain the thresholds."

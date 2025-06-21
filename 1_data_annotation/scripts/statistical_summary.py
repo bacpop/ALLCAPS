@@ -71,10 +71,7 @@ def main(args):
     
     # Messy stuff to get a clean legend
     dashed_line = Line2D([0], [0], color="black", linestyle="--", label="Balanced Accuracy")    
-    if args.legend:
-        plt.legend(kde_lines + [dashed_line], args.legend + ["Balanced Accuracy"], loc="best")
-    else:
-        plt.legend(kde_lines + [dashed_line], [f"Data {i + 1}" for i in range(len(kde_lines))] + ["Balanced Accuracy"], loc="best")
+    plt.legend(kde_lines + [dashed_line], args.legend + ["Balanced Accuracy"], loc="best")
     
     plt.tight_layout()
     plt.savefig(args.output)
@@ -103,7 +100,13 @@ def parse_args():
         "--output", default="f1_distributions.pdf",
         help="Where to save the resulting plot."
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    
+    if args.legend is not None:
+        assert len(args.confusion_matrices) == len(args.legend), "Number of confusion matrices must match number of legend labels."
+    else:
+        args.legend = [f"Data {i + 1}" for i in range(len(args.confusion_matrices))]
+    return args
 
 
 if __name__ == "__main__":

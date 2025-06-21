@@ -16,28 +16,17 @@ from sklearn.model_selection import StratifiedKFold
 from models import TransformerContrastiveHead, ContrastiveChunkedDataset
 from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
+from consts import (
+    RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
+    DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
+    DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
+    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM,
+    DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL, DEFAULT_LABEL_COLUMN,
+    DEFAULT_EARLY_STOPPING, DEFAULT_CONTRASTIVE_LOSS_RATIO
+)
 
 EPS = 1e-9
-DEFAULT_OUTPUT_DIM = 128
-DEFAULT_LR = 2e-5
-DEFAULT_EPOCHS = 100
-DEFAULT_EARLY_STOPPING = 10
-DEFAULT_BATCH_SIZE = 32
-DEFAULT_TEMPERATURE = 0.07
-DEFAULT_KFOLDS = 5
-DEFAULT_WEIGHT_FINE = 1.0
-DEFAULT_WEIGHT_COARSE = 0.6
-DEFAULT_NUM_LAYERS = 1
-DEFAULT_NHEAD = 4
-DEFAULT_EMBEDDING_DIM = 2560  # Nucleotide Transformer output TODO
-DEFAULT_DIM_FEEDFORWARD = 512
-DEFAULT_CONTRASTIVE_LOSS_RATIO = 0.4
-
-MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
-LABEL_COLUMN = "Serotype"  # TODO: Do sth about it
-NONCBL_LABEL = "NON-CBL"  # TODO: Make this a parameter
 WANDB_PROJECT_NAME = "contrastive-inference"
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -148,7 +137,7 @@ def evaluate(model, loader, ce_loss_fn, contrastive_loss_fn, alpha, temperature)
 
 def main(args):
     device = args.device
-    random_state = args.model_params.get("random_state", 42)
+    random_state = args.model_params.get("random_state", RND_STATE)
     k_folds = args.model_params.get("k_folds", DEFAULT_KFOLDS)
     temperature = args.model_params.get("temperature", DEFAULT_TEMPERATURE)
     weight_fine = args.model_params.get("weight_fine", DEFAULT_WEIGHT_FINE)
@@ -158,6 +147,10 @@ def main(args):
     alpha = args.model_params.get("alpha", DEFAULT_CONTRASTIVE_LOSS_RATIO)
     output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
+
+    missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
+    non_cbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
+    label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
 
     wandb.config.update({
         "random_state": random_state,
@@ -176,7 +169,7 @@ def main(args):
     
     print("Loading data...")
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
-    labels['Serotype'] = labels[LABEL_COLUMN].fillna(MISSING_LABEL)
+    labels['Serotype'] = labels[label_column].fillna(missing_label)
 
     noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
     if os.path.exists(noncbl_subdir):
@@ -185,11 +178,11 @@ def main(args):
         non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
         
         non_cbl_labels = pd.DataFrame({
-            'Serotype': [NONCBL_LABEL] * len(non_cbl_embeddings),
+            'Serotype': [non_cbl_label] * len(non_cbl_embeddings),
         }, index=non_cbl_embeddings)
         labels = pd.concat([labels, non_cbl_labels], axis=0)
 
-    indices = labels["Serotype"] != MISSING_LABEL if args.labeled_only else np.ones(len(labels), dtype=bool)
+    indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
     if args.skip_labels:
         skip_indices = labels['Serotype'].isin(args.skip_labels)
         print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
@@ -206,7 +199,7 @@ def main(args):
         loss_function = supervised_contrastive_loss
 
     sample_ids = labels.index[indices].tolist()
-    is_capsule = (labels['Serotype'] != NONCBL_LABEL).astype(int)[indices].tolist()
+    is_capsule = (labels['Serotype'] != non_cbl_label).astype(int)[indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X

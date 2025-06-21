@@ -1,7 +1,7 @@
+import json
 import argparse
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 from scipy import sparse
 from sklearn.preprocessing import StandardScaler
@@ -10,12 +10,11 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import GridSearchCV, train_test_split
 from sklearn.metrics import classification_report, f1_score
 
-MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
-DEFAULT_TEST_SIZE = 0.2
-DEFAULT_COMPONENTS = 5
-MIN_COUNT = 2  # Minimum count for a label to be considered valid
-CV = 5  # Number of cross-validation folds
-RND_STATE = 42
+from consts import (
+    DEFAULT_COMPONENTS, DEFAULT_TEST_SIZE, DEFAULT_MISSING_LABEL,
+    DEFAULT_MIN_COUNT, DEFAULT_CV, RND_STATE
+)
+
 
 param_grid = {
     'n_estimators': [100, 200, 500],
@@ -33,8 +32,23 @@ def parse_args():
     parser.add_argument('--n_components', type=int, default=DEFAULT_COMPONENTS)
     parser.add_argument('--test_size', type=float, default=DEFAULT_TEST_SIZE)
     parser.add_argument('--output-dir', required=True, type=str)
+    parser.add_argument('--params', type=str, default="{}",
+                        help='JSON string of parameters for the model. '
+                             'Example: \'{"missing_label": "Non-typeable", "min_count": 2, "cv": 5}\'')
+    
+    args = parser.parse_args()
+    try:
+        args.params = json.loads(args.params)
+        if not isinstance(args.params, dict):
+            print("Model parameters should be a JSON object.")
+            args.params = {}
+    except json.JSONDecodeError:
+        print("Error parsing model parameters JSON string.")
+        args.params = {}
+    finally:
+        print("Model parameters:", args.params)
 
-    return parser.parse_args()
+    return args
 
 
 def main(args):
@@ -43,26 +57,32 @@ def main(args):
     labels = pd.read_csv(args.labels, sep="\t")
     assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
 
-    labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
+    missing_label = args.params.get("missing_label", DEFAULT_MISSING_LABEL)
+    min_count = args.params.get("min_count", DEFAULT_MIN_COUNT)
+    cv = args.params.get("cv", DEFAULT_CV)
+    rnd_state = args.params.get("random_state", RND_STATE)
+
+
+    labels['Serotype'] = labels['Serotype'].fillna(missing_label)
 
     is_duplicate = labels.duplicated()
     if is_duplicate.any():
         print("Dropping duplicate label rows...")
         labels, X = labels[~is_duplicate], X[~is_duplicate]
 
-    known_indices = labels['Serotype'] != MISSING_LABEL
+    known_indices = labels['Serotype'] != missing_label
 
     # Drop samples with labels that only occur once
-    underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < MIN_COUNT].index
+    underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < min_count].index
     if underrep_labels.any():
-        print(f"Dropping serotypes with less than {MIN_COUNT} samples:", *underrep_labels.to_list())
+        print(f"Dropping serotypes with less than {min_count} samples:", *underrep_labels.to_list())
         known_indices &= ~labels['Serotype'].isin(underrep_labels)
 
     X_known, labels_known = X[known_indices], labels[known_indices]["Serotype"]
     print(f"Total samples: {X.shape[0]}, known-label samples: {X_known.shape[0]}")
 
     X_train, X_test, y_train, y_test = train_test_split(X_known, labels_known, test_size=args.test_size,
-                                                        random_state=RND_STATE, stratify=labels_known)
+                                                        random_state=rnd_state, stratify=labels_known)
 
     print("Training LDA and Random Forest...")
     print("\tStandardizing data...")
@@ -76,8 +96,8 @@ def main(args):
     X_test_lda = lda.transform(X_test_scaled)
 
     print("\tTraining Random Forest with GridSearchCV...")
-    rf = RandomForestClassifier(random_state=RND_STATE)
-    grid = GridSearchCV(rf, param_grid, cv=CV, n_jobs=-1, verbose=1)
+    rf = RandomForestClassifier(random_state=rnd_state)
+    grid = GridSearchCV(rf, param_grid, cv=cv, n_jobs=-1, verbose=1)
     grid.fit(X_train_lda, y_train)
     best_rf = grid.best_estimator_
 

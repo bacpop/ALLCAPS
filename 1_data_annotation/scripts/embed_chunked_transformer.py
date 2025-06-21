@@ -7,11 +7,10 @@ import numpy as np
 from Bio import SeqIO
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-
-DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
-DEFAULT_CHUNK_SIZE = 512
-DEFAULT_STRIDE = 0.75  # 25% overlap
-DEFAULT_MAX_LEN = 20_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
+from consts import (
+    DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
+    DEFAULT_STRIDE, DEFAULT_MAX_LEN
+)
 
 
 def chunk_sequence(seq, chunk_size=512, stride=256):

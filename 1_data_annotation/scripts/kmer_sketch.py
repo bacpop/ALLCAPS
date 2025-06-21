@@ -3,8 +3,7 @@ from Bio import SeqIO
 from scipy import sparse
 from sklearn.feature_extraction.text import HashingVectorizer
 
-DEFAULT_K = 15
-DEFAULT_SKETCH_SIZE = 2**14
+from consts import DEFAULT_K, DEFAULT_SKETCH_SIZE
 
 def read_fasta(file_path):
     sequences = []
@@ -17,8 +16,8 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Generate kmer sketch from FASTA file.")
     parser.add_argument('--fasta', type=str, required=True, help="Path to the input FASTA file.")
     parser.add_argument('--output', type=str, required=True, help="Path to the output sketch file.")
-    parser.add_argument('--k', type=int, default=6, help="Length of the kmer.")
-    parser.add_argument('--sketch_size', type=int, default=16384, help="Size of the sketch.")
+    parser.add_argument('--k', type=int, default=DEFAULT_K, help="Length of k-mers to use for sketching.")
+    parser.add_argument('--sketch_size', type=int, default=DEFAULT_SKETCH_SIZE, help="Size of the sketch")
     return parser.parse_args()
 
 
