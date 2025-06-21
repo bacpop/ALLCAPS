@@ -66,7 +66,7 @@ class TransformerContrastiveHead(nn.Module):
             batch_first=True
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        self.classifier = nn.Linear(input_dim, 2)
+        self.classifier = nn.Linear(output_dim, 2)
 
         self.project = nn.Sequential(
             nn.Linear(input_dim, input_dim),
@@ -80,5 +80,6 @@ class TransformerContrastiveHead(nn.Module):
         x = x + self.pos_embed(pos)
         x = self.encoder(x)  # Encoded (B, L, D)
         x = x.mean(dim=1)  # Pooled (B, D)
-        logits = self.classifier(x)  # Classifier output (B, output_dim)
-        return logits, F.normalize(self.project(x), dim=1)
+        z = F.normalize(self.project(x), dim=1)
+        logits = self.classifier(z)  # Classifier output (B, output_dim)
+        return logits, z
