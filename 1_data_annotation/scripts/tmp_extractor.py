@@ -37,7 +37,7 @@ def main(args):
     for public_id in labels.index:
         if public_id in sequences_dict:
             seq = sequences_dict[public_id]
-            results.append(SeqIO.SeqRecord(seq, id=public_id, description=""))
+            results.append(SeqIO.SeqRecord(seq, id=public_id, description=f"{labels[public_id]}"))
         else:
             print(f"Warning: Sequence for {public_id} not found in the fasta file.")
 
