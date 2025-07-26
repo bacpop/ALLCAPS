@@ -4,14 +4,14 @@ import numpy as np
 import pandas as pd
 from Bio import SeqIO
 
-RND_STATE = 42
+from consts import RND_STATE, DEFAULT_LABEL_COLUMN
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Sample sequences from serogroups.")
     parser.add_argument("--fetch_fasta", action="store_true", help="Fetch sequences in FASTA format, otherwise use embeddings.")
     parser.add_argument("--sequences", type=str, help="Path to the sequences file in FASTA format.")
-    parser.add_argument("--embeddings", type=str, required=True, help="Path to the embeddings file in CSV format.")
+    parser.add_argument("--embeddings", type=str, required=True, help="Path to the embeddings file in NPY/NPZ format.")
     parser.add_argument("--labels", type=str, required=True, help="Path to the labels file in CSV format.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save sampled sequences.")
     parser.add_argument("--sample_size", type=int, default=None, help="Number of sequences to sample from each serogroup.")
@@ -31,13 +31,18 @@ def parse_args():
 
 
 def main(args):
+    ### TODO move to params
+    serotype_column = DEFAULT_LABEL_COLUMN
+    ###
     print("Loading data...")
     X = np.load(args.embeddings)  # shape (N, D)
+    is_X_npz = isinstance(X, np.lib.npyio.NpzFile)
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
-    assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
+    if not is_X_npz:
+        assert X.shape[0] == len(labels), "Number of embeddings and labels do not match."
 
     # Get unique serogroups
-    serogroups = labels['Serotype'].unique()
+    serogroups = labels[serotype_column].unique()
     if args.serogroups:
         serogroups = [sg for sg in serogroups if sg in args.serogroups]
         print(f"Filtering serogroups: {args.serogroups}")
@@ -67,10 +72,14 @@ def main(args):
                     continue
                 sampled_sequences.append(record)
             else:
+                if is_X_npz:
+                    embedding = X[labels["Public_Name"].get_loc(idx)].tolist()
+                else:
+                    embedding = X[labels.index.get_loc(idx)].tolist()
                 sampled_sequences.append({
                     "ID": idx,
                     "Serotype": sg,
-                    "Embedding": X[labels.index.get_loc(idx)].tolist()  # Convert to list for DataFrame compatibility
+                    "Embedding": embedding
                 })
     print(f"Sampled {len(sampled_sequences)} sequences from {len(serogroups)} serogroup(s).")
 
@@ -80,6 +89,7 @@ def main(args):
         SeqIO.write(sampled_sequences, outpref + ".fasta", "fasta")
     else:
         pd.DataFrame(sampled_sequences).to_csv(outpref + ".csv", index=False)
+
 
 if __name__ == "__main__":
     main(parse_args())

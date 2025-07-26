@@ -9,7 +9,7 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM
 
 from consts import (
     DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
-    DEFAULT_STRIDE, DEFAULT_MAX_LEN
+    DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN
 )
 
 
@@ -40,7 +40,7 @@ def main():
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--model_name", default=DEFAULT_MODEL, help="Model name or path")
     parser.add_argument("--chunk_size", type=int, default=DEFAULT_CHUNK_SIZE, help="Chunk size for embedding")
-    parser.add_argument("--stride_ratio", type=float, default=DEFAULT_STRIDE, help="Stride ratio for chunking")
+    parser.add_argument("--stride_ratio", type=float, default=DEFAULT_STRIDE_RATIO, help="Stride ratio for chunking")
     parser.add_argument("--seq_max_len", type=int, default=DEFAULT_MAX_LEN, help="Maximum sequence length for the CONTIGS")
     args = parser.parse_args()
 

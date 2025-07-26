@@ -21,12 +21,12 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from consts import RND_STATE
 
-
+ID_SEP = "__"
 np.random.seed(RND_STATE)
 
 def extract_public_name(file_name):
     try:
-        public_name = os.path.basename(file_name).split("__")[0]
+        public_name = os.path.basename(file_name).split(ID_SEP)[0]
     except IndexError:
         public_name = os.path.basename(file_name).split(".")[0]
         print("Warning: No public name found in file name. Using file name as public name:", public_name)
@@ -101,18 +101,18 @@ def save_non_cbl(records, missing_files, list_len, out_path):
             fasta_sequences = SeqIO.parse(f, 'fasta')
             for fasta in fasta_sequences:
                 contig_id, sequence = fasta.id, str(fasta.seq)
-                records.append(SeqRecord(Seq(sequence), id=public_name + "__" + contig_id + "_missing", description=fasta.description))
+                records.append(SeqRecord(Seq(sequence), id=public_name + ID_SEP + contig_id + "_missing", description=fasta.description))
     
     # Filter out too short sequences
     records = [record for record in records if len(record.seq) >= MIN_LENGTH]
-    # subsample too long sequences according to the list_len distribution
+    # Subsample too long sequences according to the list_len distribution
     records = list(map(
         lambda record: record if len(record.seq) <= MAX_LENGTH else
         SeqRecord(Seq(str(record.seq)[:min(MAX_LENGTH, np.random.choice(list_len))]), id=record.id + "_subsampled",
                     description=record.description),
         records
-        ))
-
+        )
+    )
     with open(out_path, "w") as o:
         SeqIO.write(records, o, "fasta")
 
@@ -214,11 +214,11 @@ def process_file(file, seq_pair_dict, cutoff):
                         pref, suff = sequence[:locus_1], sequence[locus_2:]
                         if pref:
                             pref = str(Seq(pref).reverse_complement()) if strand_str == "_rev" else pref
-                            non_cbl_records.append(SeqRecord(Seq(pref), id=public_name + "__" + contig_id + "_" + pair_id + "_noncbl_prefix",
+                            non_cbl_records.append(SeqRecord(Seq(pref), id=public_name + ID_SEP + contig_id + "_" + pair_id + "_noncbl_prefix",
                                                             description=fasta.description))
                         if suff:
                             suff = str(Seq(suff).reverse_complement()) if strand_str == "_rev" else suff
-                            non_cbl_records.append(SeqRecord(Seq(suff), id=public_name + "__" + contig_id + "_" + pair_id + "_noncbl_suffix",
+                            non_cbl_records.append(SeqRecord(Seq(suff), id=public_name + ID_SEP + contig_id + "_" + pair_id + "_noncbl_suffix",
                                                             description=fasta.description))
                         # get sequence onto correct strand
                         if strand_str == "_rev":
@@ -226,7 +226,7 @@ def process_file(file, seq_pair_dict, cutoff):
                             strand_str = "_for"
                         
                         detail += strand_str
-                        cut_records.append(SeqRecord(Seq(cut), id=public_name + "__" + contig_id + "_" + pair_id + "_" + detail,
+                        cut_records.append(SeqRecord(Seq(cut), id=public_name + ID_SEP + contig_id + "_" + pair_id + "_" + detail,
                                                     description=fasta.description))
         else:
             not_found.add(file)
@@ -268,6 +268,7 @@ def main():
     # get pairs of query sequences
     seq_pair_dict = defaultdict(list)
 
+    print(f"Reading query sequences from {query}...")
     with _open(query) as handle:
         fasta_sequences = SeqIO.parse(handle, 'fasta')
         for fasta in fasta_sequences:
@@ -278,25 +279,25 @@ def main():
     for _, seq_pair in seq_pair_dict.items():
         assert len(seq_pair) == 2
     
-    # generate list of cut loci
+    print(f"Processing files listed in {infiles}...")
     with open(infiles, "r") as f:
         file_list = [line.strip() for line in f.readlines()]
 
     cut_records, partial_found, not_found, non_cbl_records = parallel_cut_loci(file_list, seq_pair_dict, cutoff)
 
-    # write cut loci
+    print(f"Writing cut loci...")
     SeqIO.write(cut_records, outpref + ".fasta", "fasta")
 
-    # write partial_found and not found
+    print(f"Writing partial and not found files...")
     with open(outpref + "_partial.txt", "w") as o:
         for entry in partial_found:
             o.write(entry + "\n")
-    
     with open(outpref + "_absent.txt", "w") as o:
         for entry in not_found:
             o.write(entry + "\n")
     
     if options.save_noncbl:
+        print(f"Saving non-CBL sequences...")
         save_non_cbl(non_cbl_records, not_found, list(map(len, cut_records)), outpref + "_noncbl.fasta")
     print(f"Cut loci written to {outpref}*")
 

@@ -90,7 +90,7 @@ def map_serotype_to_group(serotype):
         return serotype
     if serotype in SEROTYPE_GROUPS:
         return SEROTYPE_GROUPS[serotype]
-    print(f"Warning: {serotype} not found in mapping.")
+
     return serotype
 
 

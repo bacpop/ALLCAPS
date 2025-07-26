@@ -9,10 +9,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.metrics import classification_report, f1_score
 from sklearn.preprocessing import StandardScaler
 
-MISSING_LABEL = "Non-typeable"  # TODO: Make this a parameter
-DEFAULT_TEST_SIZE = 0.2
-DEFAULT_KNN_K = 5
-MIN_COUNT = 2  # Minimum count for a label to be considered valid
+from consts import DEFAULT_KNN_K, DEFAULT_TEST_SIZE, DEFAULT_MISSING_LABEL, DEFAULT_MIN_COUNT
 
 
 def main(args):
@@ -24,9 +21,12 @@ def main(args):
     if not is_X_npz:
         assert len(X) == len(labels), "Number of embeddings and labels do not match."
         # TODO add sanity test for npz
+    
+    missing_label = args.params.get("missing_label", DEFAULT_MISSING_LABEL)
+    min_count = args.params.get("min_count", DEFAULT_MIN_COUNT)
 
 
-    labels['Serotype'] = labels['Serotype'].fillna(MISSING_LABEL)
+    labels['Serotype'] = labels['Serotype'].fillna(missing_label)
 
     # In case "someone" has messed up while cleaning the data
     is_duplicate = labels.duplicated()
@@ -34,17 +34,18 @@ def main(args):
         print("Dropping duplicate label rows...")
         labels = labels[~is_duplicate]
 
-    known_indices = labels['Serotype'] != MISSING_LABEL
+    known_indices = labels['Serotype'] != missing_label
 
     # Drop samples with labels that only occur once
-    underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < MIN_COUNT].index
+    underrep_labels = labels['Serotype'].value_counts()[labels['Serotype'].value_counts() < min_count].index
     if underrep_labels.any():
-        print(f"Dropping serotypes with less than {MIN_COUNT} samples:", *underrep_labels.to_list())
+        print(f"Dropping serotypes with less than {min_count} samples:", *underrep_labels.to_list())
         known_indices &= ~labels['Serotype'].isin(underrep_labels)
 
     labels_known = labels[known_indices]["Serotype"]
+    labels_known = labels_known[labels_known != "15B/15C"]  # Example label to filter out, adjust as needed
     if is_X_npz:
-        X_known = np.array([X[key] for key in labels[known_indices]["Public_name"]])
+        X_known = np.array([X[key] for key in labels[known_indices]["Public_name"] if key in X])
     else:
         X = X[~is_duplicate]
         X_known = X[known_indices]
@@ -66,10 +67,39 @@ def main(args):
     print(report_str)
     print(f1_str)
 
+    # Choose a test sample (e.g. the first one)
+    samples_2 = X_known[labels_known == "15B/15C"]
+
+    # Get indices and distances of the nearest neighbors
+    distances, indices = knn.kneighbors(samples_2, n_neighbors=10)
+
+    # Get labels of nearest neighbors
+    neighbor_labels = labels_known[indices[0]]
+
+    # Get distribution of neighbor labels (votes)
+    labels, counts = np.unique(neighbor_labels, return_counts=True)
+    vote_distribution = dict(zip(labels, counts))
+
+    # Convert to a sorted DataFrame for readability
+    neighbors_df = pd.DataFrame({
+        "Index": indices[0],
+        "Distance": distances[0],
+        "Label": neighbor_labels
+    }).sort_values(by="Distance")
+
+    print("Sorted Neighbors:")
+    print(neighbors_df)
+    print("\nVote Distribution:")
+    print(vote_distribution)
+
+
     with open(Path(args.output_dir) / "knn_report.txt", "w") as f:
         f.write("Classification Report (test set)\n")
         f.write(report_str + "\n")
-        f.write(f1_str)
+        f.write(f1_str + "\n\n")
+        f.write("\nSorted Neighbors:\n")
+        f.write(neighbors_df.to_string(index=False) + "\n")
+
 
     conf_matrix = pd.crosstab(y_test, y_pred, rownames=['Actual'], colnames=['Predicted'])
     conf_matrix = conf_matrix.reindex(index=conf_matrix.index, columns=conf_matrix.index, fill_value=0)
