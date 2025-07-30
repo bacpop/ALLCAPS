@@ -5,7 +5,8 @@ from tqdm import tqdm
 import torch
 import numpy as np
 import pandas as pd
-from sklearn.metrics import classification_report, f1_score
+from sklearn.metrics import classification_report, f1_score, roc_curve, auc
+import matplotlib.pyplot as plt
 
 from models import TransformerContrastiveHead
 from consts import (
@@ -42,16 +43,34 @@ def main(args):
     model.eval()
 
     print("Running inference...")
-    all_logits = []
+    all_logits, all_probs = [], []
     with torch.no_grad():
         for i in tqdm(range(0, len(X), args.batch_size)):
             batch = torch.tensor(X[i:i+args.batch_size], dtype=torch.float32, device=device)
             logits = model.classifier(batch)
             preds = torch.argmax(logits, dim=1).cpu().numpy()
+            probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
             all_logits.append(preds)
+            all_probs.append(probs)
     y_pred = np.concatenate(all_logits)
+    y_score = np.concatenate(all_probs)
+    
     clf_report = classification_report(y, y_pred, target_names=["Non-CBL", "CBL"], labels=[0, 1])
     f1 = f1_score(y, y_pred, average='weighted')
+    fpr, tpr, _ = roc_curve(y, y_score)
+    roc_auc = auc(fpr, tpr)
+
+    plt.figure()
+    plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (AUC = {roc_auc:.2f})')
+    plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic')
+    plt.legend(loc="lower right")
+    plt.savefig(args.output.replace('.txt', '_roc.pdf'))
+    plt.close()
     
     print("Classification report:")
     print(clf_report)
