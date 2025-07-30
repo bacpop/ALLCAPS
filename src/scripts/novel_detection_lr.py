@@ -14,9 +14,7 @@ from transformers import AutoTokenizer, AutoModelForMaskedLM
 from models import TransformerLRClassifier
 from consts import (
     DEFAULT_MIN_SEROGROUP_SIZE, DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
-    DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN, DEFAULT_EMBEDDING_DIM,
-    DEFAULT_OUTPUT_DIM, DEFAULT_NHEAD, DEFAULT_NUM_LAYERS,
-    DEFAULT_SEP, DEFAULT_LABEL_COLUMN, DEFAULT_MISSING_LABEL,
+    DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN
 )
 
 EPS = 1e-6
@@ -45,7 +43,7 @@ def transformer_embedding(  # TODO batch this
     chunk_size = min(chunk_size, max_length)
     stride = int(chunk_size * stride_ratio)
 
-    cbl_logits, serotype_logits = [], []
+    all_cbl_logits, all_serotype_logits = [], []
     all_embeddings = []
     for seq in sequences:
         # Chunk the sequence
@@ -53,7 +51,6 @@ def transformer_embedding(  # TODO batch this
         if not chunks:
             continue
 
-        # Embed each chunk
         inputs = tokenizer(
             chunks,
             return_tensors="pt",
@@ -71,34 +68,24 @@ def transformer_embedding(  # TODO batch this
         with torch.no_grad():
             cbl_logits, serotype_logits, embedding = contrastive_model(pooled.unsqueeze(0))  # (1, L, D) -> (1, output_dim)
             embedding = embedding.squeeze(0).cpu().numpy()  # (output_dim,)
-        cbl_logits.append(cbl_logits.cpu().numpy())
-        serotype_logits.append(serotype_logits.cpu().numpy())
+        all_cbl_logits.append(cbl_logits.cpu().numpy())
+        all_serotype_logits.append(serotype_logits.cpu().numpy())
         all_embeddings.append(embedding)
 
-    return np.stack(cbl_logits), np.stack(serotype_logits), np.stack(all_embeddings)
-    
+    return np.stack(all_cbl_logits), np.stack(all_serotype_logits), np.stack(all_embeddings)
+
 
 def main(args):
     ### TODO introduce params
     nt_model_name = DEFAULT_MODEL
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sep = DEFAULT_SEP
     chunk_size = DEFAULT_CHUNK_SIZE
     stride_ratio = DEFAULT_STRIDE_RATIO
     max_length = DEFAULT_MAX_LEN
-    embedding_dim = DEFAULT_EMBEDDING_DIM
-    output_dim = DEFAULT_OUTPUT_DIM
-    nhead = DEFAULT_NHEAD
-    num_layers = DEFAULT_NUM_LAYERS
-    label_column = DEFAULT_LABEL_COLUMN
-    missing_label = DEFAULT_MISSING_LABEL
-    min_count = DEFAULT_MIN_SEROGROUP_SIZE
     
     thresholds = list(map(float, map(str.strip, args.thresholds.split(","))))
     assert len(thresholds) == 4, "Four thresholds are required."
     assert all(0 < t < 1 for t in thresholds), "Thresholds must be between 0 and 1."
-    thresh_cps, thresh_noncps, norm_noncbl_ppf, thresh_beta = thresholds
-    ### 
 
     print("Loading the transformer model and contrastive head...")
     tokenizer = AutoTokenizer.from_pretrained(nt_model_name)
@@ -107,8 +94,6 @@ def main(args):
     model_path = os.path.join(args.output_dir, "transformer_model.pth")
     model_save_dict = torch.load(model_path, map_location=device)
     model_config = model_save_dict['model_config']
-    serotype_to_idx = model_save_dict['serotype_to_idx']
-    num_serotypes = model_save_dict['num_serotypes']
     
     # Initialize model with saved configuration
     contrastive_model = TransformerLRClassifier(
@@ -138,30 +123,21 @@ def main(args):
             max_length=max_length,
         )
         
-        # Extract logits for the single query sequence
         query_cbl_logits = query_cbl_logits[0]  # Shape: (num_chunks,)
         query_serotype_logits = query_serotype_logits[0]  # Shape: (num_chunks, num_serotypes)
         
-        # Calculate statistics for CBL logits
         cbl_mean = np.mean(query_cbl_logits)
         cbl_std = np.std(query_cbl_logits)
         cbl_min = np.min(query_cbl_logits)
         cbl_max = np.max(query_cbl_logits)
         
-        # Calculate statistics for serotype logits
-        serotype_mean = np.mean(query_serotype_logits, axis=0)  # Mean per serotype
-        serotype_std = np.std(query_serotype_logits, axis=0)    # Std per serotype
         serotype_overall_mean = np.mean(query_serotype_logits)
         serotype_overall_std = np.std(query_serotype_logits)
         
-        # Get predicted labels
         cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
         serotype_predictions = torch.softmax(torch.tensor(query_serotype_logits), dim=-1).numpy()
-        
-        # Predicted CBL labels (binary)
         cbl_pred_labels = (cbl_predictions > 0.5).astype(int)
         
-        # Predicted serotype labels (argmax)
         serotype_pred_labels = np.argmax(serotype_predictions, axis=-1)
         
         print(f"\t- CBL Logits - Mean: {cbl_mean:.4f}, Std: {cbl_std:.4f}, Min: {cbl_min:.4f}, Max: {cbl_max:.4f}")
@@ -173,7 +149,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Novel detection script.")
     parser.add_argument("--query", type=str, required=True, help="Path to the query FASTA file.")
     parser.add_argument("--embeddings", type=str, required=True, help="Path to the embeddings file.")
-    parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")  # TODO should be a subsey´t
+    parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")  # TODO should be a subset
     parser.add_argument("--distances", type=str, required=True, help="Path to the distances file.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output files.")
     parser.add_argument("--distributions", type=str, default="distributions_params.json", help="Path to the distributions parameters file.")
