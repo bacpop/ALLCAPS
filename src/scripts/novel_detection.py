@@ -92,13 +92,13 @@ def fit_distributions(labels: pd.DataFrame, distances: np.ndarray, min_serogroup
         sub_distances = distances[np.ix_(indices, indices)][np.triu_indices(len(indices), k=1)]
         sub_distances = sub_distances[sub_distances > EPS]
         a, b, loc, scale = beta.fit(sub_distances, floc=0, fscale=2)  # 2 because of cosine_distance
-        beta_params[serogroup] = {"a": a, "b": b}  # TODO Should I store "loc": loc, "scale": scale?
+        beta_params[serogroup] = {"a": float(a), "b": float(b)}  # TODO Should I store "loc": loc, "scale": scale?
 
     # Could either fit a normal or a GMM with 2 components
     normal_params = norm.fit(distances.flatten())
     normal_params = {
-        "mu": normal_params[0],
-        "sigma": normal_params[1]
+        "mu": float(normal_params[0]),
+        "sigma": float(normal_params[1])
     }
     return beta_params, normal_params
 
@@ -163,20 +163,17 @@ def main(args):
     #     print(f"Dropping serotypes with less than {min_count} samples:", *underrep_labels.to_list())
     #     known_indices &= ~labels[label_column].isin(underrep_labels)
     labels = labels[known_indices]
+    labels = labels[labels[label_column] != "2"]  # TODO fix by feeding a subset of labels to this script in a standalone workflow
     
     is_emb_npz = isinstance(embeddings, np.lib.npyio.NpzFile)
     if is_emb_npz:
         cbl_prefix = lambda k: f"cbl{sep}{k}"
-        embeddings = np.array([embeddings[cbl_prefix(key)] for key in labels.index])  #  if cbl_prefix(key) in embeddings ?
+        embeddings = np.array([embeddings[cbl_prefix(key)] for key in labels.index if cbl_prefix(key) in embeddings.keys()])
         # TODO Option to show non-cbl too
     assert embeddings.shape[0] == len(labels), "Number of embeddings does not match number of labels."
 
-    print("Loading the distance matrix...")
-    dist_data = np.load(args.distances)
-    dist_matrix = np.zeros((dist_data["size"], dist_data["size"]))
-    dist_matrix[np.triu_indices_from(dist_matrix, k=1)] = dist_data["distances"]
-    dist_matrix += dist_matrix.T
-    assert dist_matrix.shape[0] == labels.shape[0], "Distance matrix size does not match number of labels."
+    print("Calculating pairwise distances...")
+    dist_matrix = cosine_distances(embeddings)  # Should have calculated here instead
 
     print("Parsing thresholds and parameters...")
     params_path = os.path.join(args.output_dir, args.distributions)
@@ -227,8 +224,9 @@ def main(args):
             max_length=max_length,
         )
         query_logits = torch.sigmoid(torch.tensor(query_logits)).numpy().flatten()
-        print(f"Classification logits for {record.id}: non-cbl, cbl = {query_logits}")
         argmax_idx = np.argmax(query_logits)
+        prediction = "CBL" if argmax_idx == 1 else "Non-CBL"
+        print(f"Classification for {record.id}: {prediction}, confidence: {query_logits.max():.4f}")
         if query_logits[argmax_idx] < thresh_cps:
             print(f"The model is not confident about Query {record.id} being a CPS. Confidence: {query_logits[argmax_idx]:.4f}.")
         if query_logits[0] > thresh_cps:
@@ -243,7 +241,7 @@ def main(args):
                 "query_distance_std": None,  # Will be filled later
                 "#Samples": None,  # TODO Will be filled later
             })
-        elif query_logits[1] > thresh_noncps:
+        elif query_logits[1] > thresh_cps:
             print(f"Query {record.id} is classified as CBL with confidence {query_logits[1]:.4f}.")
             
         query_distances = cosine_distances(query_embedding, embeddings).flatten()
@@ -286,7 +284,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Novel detection script.")
     parser.add_argument("--query", type=str, required=True, help="Path to the query FASTA file.")
     parser.add_argument("--embeddings", type=str, required=True, help="Path to the embeddings file.")
-    parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")
+    parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")  # TODO should be a subset
     parser.add_argument("--distances", type=str, required=True, help="Path to the distances file.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output files.")
     parser.add_argument("--distributions", type=str, default="distributions_params.json", help="Path to the distributions parameters file.")
