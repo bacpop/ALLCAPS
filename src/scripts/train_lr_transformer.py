@@ -26,7 +26,7 @@ from consts import (
 )
 
 EPS = 1e-9
-WANDB_PROJECT_NAME = "contrastive-inference"
+WANDB_PROJECT_NAME = "logistic-inference"
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -84,7 +84,7 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, cont
         serotype_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
         if capsule_mask.sum() > 0:
             # Convert serotype labels to indices for capsule samples
-            serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
+            serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i][-1]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
             serotype_loss_val = serotype_loss_fn(serotype_logits[capsule_mask], serotype_indices)
 
         # Contrastive loss (only for capsule samples)
@@ -132,7 +132,7 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, contrastive_loss_fn, a
             # Serotype classification loss (only for capsule samples)
             serotype_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
             if capsule_mask.sum() > 0:
-                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
+                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i][-1]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
                 serotype_loss_val = serotype_loss_fn(serotype_logits[capsule_mask], serotype_indices)
 
             # Contrastive loss (only for capsule samples)
@@ -151,7 +151,7 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, contrastive_loss_fn, a
             # Serotype accuracy (only for capsule samples)
             if capsule_mask.sum() > 0:
                 _, predicted_serotype = torch.max(serotype_logits[capsule_mask], 1)
-                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
+                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i][-1]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
                 correct_serotype += (predicted_serotype == serotype_indices).sum().item()
                 total_serotype += serotype_indices.size(0)
 
