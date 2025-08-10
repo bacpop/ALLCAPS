@@ -1,13 +1,11 @@
 import argparse
 import os
-import json
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from Bio import SeqIO
 from typing import List, Tuple
-from scipy.stats import beta, norm
-from sklearn.metrics.pairwise import cosine_distances
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
@@ -16,18 +14,25 @@ from consts import (
     DEFAULT_MIN_SEROGROUP_SIZE, DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
     DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN
 )
+from utils import chunk_sequence, embed_chunks
+
 
 EPS = 1e-6
-THRESH_CPS = 0.9  # TODO clean up and document and verify and what the fuck
+THRESH_CPS = 0.5  # TODO clean up and document and verify and what the fuck
 THRESH_NONCPS = 0.1
 NORM_NONCBL_PPF = 0.95
 THRESH_BETA = 0.98
 
 
+def energy_score(logits, temperature=1.0) -> float:
+    energy = -temperature * torch.logsumexp(logits / temperature, dim=1)
+    return energy.item()
+
+
 def transformer_embedding(  # TODO batch this 
     tokenizer,
     nt_model,
-    contrastive_model: TransformerLRClassifier,
+    logistic_model: TransformerLRClassifier,
     sequences: List[str],
     device: str = "cuda",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
@@ -47,27 +52,17 @@ def transformer_embedding(  # TODO batch this
     all_embeddings = []
     for seq in sequences:
         # Chunk the sequence
-        chunks = [seq[i:i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)]
+        chunks = chunk_sequence(seq, chunk_size, stride)
         if not chunks:
+            print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
             continue
+        pooled = embed_chunks(chunks, tokenizer, nt_model, device, max_length)  # shape (L, D)    
 
-        inputs = tokenizer(
-            chunks,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=max_length
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        # Feed through logistic transformer model
         with torch.no_grad():
-            outputs = nt_model(**inputs, output_hidden_states=True)
-            last_hidden = outputs.hidden_states[-1]  # (L, T, D)
-            pooled = last_hidden.mean(dim=1)         # (L, D)
-
-        # Feed through contrastive model
-        with torch.no_grad():
-            cbl_logits, serotype_logits, embedding = contrastive_model(pooled.unsqueeze(0))  # (1, L, D) -> (1, output_dim)
+            cbl_logits, serotype_logits, embedding = logistic_model(pooled.unsqueeze(0))  # (1, L, D) -> (1, output_dim)
             embedding = embedding.squeeze(0).cpu().numpy()  # (output_dim,)
+
         all_cbl_logits.append(cbl_logits.cpu().numpy())
         all_serotype_logits.append(serotype_logits.cpu().numpy())
         all_embeddings.append(embedding)
@@ -94,28 +89,28 @@ def main(args):
     model_path = os.path.join(args.output_dir, "transformer_model.pth")
     model_save_dict = torch.load(model_path, map_location=device)
     model_config = model_save_dict['model_config']
+    idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
     
     # Initialize model with saved configuration
-    contrastive_model = TransformerLRClassifier(
+    logistic_model = TransformerLRClassifier(
         input_dim=model_config['input_dim'],
         num_classes=model_config['num_classes'],
         output_dim=model_config['output_dim'],
         nhead=model_config['nhead'],
         num_layers=model_config['num_layers']
     ).to(device)
-    contrastive_model.load_state_dict(model_save_dict['model_state_dict'])
-    contrastive_model.eval()
+    logistic_model.load_state_dict(model_save_dict['model_state_dict'])
+    logistic_model.eval()
 
-    results = []
+    results = dict()
     print("Processing queries...")
     total = sum(1 for _ in SeqIO.parse(args.query, "fasta"))
     for record in tqdm(SeqIO.parse(args.query, "fasta"), total=total):
         print(f"Processing query: {record.id}...")
-        print("\t- Embedding the query sequence...")
         query_cbl_logits, query_serotype_logits, query_embedding = transformer_embedding(
             tokenizer=tokenizer,
             nt_model=nt_model,
-            contrastive_model=contrastive_model,
+            logistic_model=logistic_model,
             sequences=[str(record.seq)],
             device=device,
             chunk_size=chunk_size,
@@ -123,27 +118,26 @@ def main(args):
             max_length=max_length,
         )
         
-        query_cbl_logits = query_cbl_logits[0]  # Shape: (num_chunks,)
-        query_serotype_logits = query_serotype_logits[0]  # Shape: (num_chunks, num_serotypes)
-        
-        cbl_mean = np.mean(query_cbl_logits)
-        cbl_std = np.std(query_cbl_logits)
-        cbl_min = np.min(query_cbl_logits)
-        cbl_max = np.max(query_cbl_logits)
-        
-        serotype_overall_mean = np.mean(query_serotype_logits)
-        serotype_overall_std = np.std(query_serotype_logits)
-        
+        query_cbl_logits = query_cbl_logits[0][0]  # (1, 2) -> (2,)
+        query_serotype_logits = query_serotype_logits[0]
         cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
-        serotype_predictions = torch.softmax(torch.tensor(query_serotype_logits), dim=-1).numpy()
-        cbl_pred_labels = (cbl_predictions > 0.5).astype(int)
         
-        serotype_pred_labels = np.argmax(serotype_predictions, axis=-1)
-        
-        print(f"\t- CBL Logits - Mean: {cbl_mean:.4f}, Std: {cbl_std:.4f}, Min: {cbl_min:.4f}, Max: {cbl_max:.4f}")
-        print(f"\t- Serotype Logits - Overall Mean: {serotype_overall_mean:.4f}, Overall Std: {serotype_overall_std:.4f}")
-        print(f"\t- CBL Predictions - Mean: {np.mean(cbl_predictions):.4f}, Positive chunks: {np.sum(cbl_pred_labels)}/{len(cbl_pred_labels)}")
-        print(f"\t- Serotype Predictions - Most frequent: {np.bincount(serotype_pred_labels).argmax()}, Confidence: {np.max(np.mean(serotype_predictions, axis=0)):.4f}")
+        results[record.id] = {
+            "cbl_logits": query_cbl_logits,
+            "serotype_logits": query_serotype_logits,
+            "embedding": query_embedding,
+            "is_cbl": cbl_predictions[1] > thresholds[0],
+        }
+    
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    results_df["pred_argmax"] = results_df["serotype_logits"].apply(
+        lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
+    )
+    results_df["pred_cbl"] = results_df["cbl_logits"].apply(lambda x: "cbl" if x[1] > thresholds[0] else "non-cbl")
+    results_df["logits_energy"] = results_df["serotype_logits"].apply(lambda x: energy_score(torch.tensor(x), temperature=1.0))
+
+    results_df.to_csv(os.path.join(args.output_dir, "query_results.csv"), index=False)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Novel detection script.")

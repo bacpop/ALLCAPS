@@ -192,3 +192,22 @@ def collate_fn(batch):
         'is_capsule': is_capsule          # tensor [B]
     }
 
+def chunk_sequence(seq, chunk_size=512, stride=256):
+    return [seq[i:i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)]
+
+
+def embed_chunks(chunks, tokenizer, model, device, max_length):
+    inputs = tokenizer(
+        chunks,
+        return_tensors="pt",
+        padding="max_length",
+        truncation=True,
+        max_length=max_length
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs, output_hidden_states=True)
+        last_hidden = outputs.hidden_states[-1]  # (B, T, D)
+        pooled = last_hidden.mean(dim=1)         # (B, D)
+    return pooled.cpu()
+
