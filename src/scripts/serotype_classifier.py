@@ -1,5 +1,3 @@
-#!/usr/bin/env python
-
 import json
 import argparse
 from tqdm import tqdm
@@ -8,25 +6,16 @@ import torch
 import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
-import matplotlib.pyplot as plt
-import seaborn as sns
 
 from models import TransformerLRClassifier
-from consts import (
-    DEFAULT_NUM_LAYERS, DEFAULT_NHEAD, DEFAULT_OUTPUT_DIM,
-    DEFAULT_EMBEDDING_DIM, DEFAULT_SEP, DEFAULT_BATCH_SIZE,
-    DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL
-)
+from consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL
 
 
 def main(args):
-    num_layers = args.model_params.get("num_layers", DEFAULT_NUM_LAYERS)
-    nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
-    output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
-    embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
+    device = torch.device(args.device)
+
     sep = args.model_params.get("sep", DEFAULT_SEP)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
-    noncbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
     
     print(f"Loading embeddings from: {args.embeddings}")
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
@@ -83,12 +72,7 @@ def main(args):
     X_filtered = np.stack([X[key] for key in labels_df['key']])
     
     print(f"Loading model from: {args.model}")
-    device = torch.device(args.device)
-    
-    # Load the saved model dictionary
     model_save_dict = torch.load(args.model, map_location=device)
-    
-    # Extract model configuration and serotype mapping
     model_config = model_save_dict['model_config']
     serotype_to_idx = model_save_dict['serotype_to_idx']
     num_serotypes = model_save_dict['num_serotypes']
@@ -148,17 +132,15 @@ def main(args):
     for i, serotype in enumerate(sorted(serotype_to_idx.keys())):
         labels_df[f'prob_{serotype}'] = all_probabilities[:, serotype_to_idx[serotype]]
     
-    # Save predictions
-    predictions_output = args.output.replace('.txt', '_predictions.tsv')
+    predictions_output = f"{args.output_dir}/serotype_predictions.txt"
     labels_df.to_csv(predictions_output, sep='\t', index=False)
     print(f"Predictions saved to: {predictions_output}")
     
-    # Evaluate if true labels are available
+    report_path = f"{args.output_dir}/classification_report.txt"
     if args.true_labels and 'Serotype' in labels_df.columns:
         y_true = labels_df['Serotype'].values
         y_pred = labels_df['predicted_serotype'].values
         
-        # Remove samples with missing true labels
         valid_mask = y_true != missing_label
         if not valid_mask.all():
             print(f"Removing {(~valid_mask).sum()} samples with missing true labels")
@@ -173,31 +155,17 @@ def main(args):
             return
         
         print(f"Evaluating on {len(y_true)} samples with valid labels")
-        
-        # Calculate metrics
         accuracy = accuracy_score(y_true, y_pred)
         f1_weighted = f1_score(y_true, y_pred, average='weighted')
         f1_macro = f1_score(y_true, y_pred, average='macro')
         
-        # Get unique serotypes for classification report
+        # Generate classification reports
         unique_serotypes = sorted(list(set(y_true) | set(y_pred)))
         clf_report = classification_report(y_true, y_pred, target_names=unique_serotypes, labels=unique_serotypes)
         
-        # Create confusion matrix
         cm = confusion_matrix(y_true, y_pred, labels=unique_serotypes)
-        
-        # Plot confusion matrix
-        plt.figure(figsize=(max(12, len(unique_serotypes) * 0.8), max(10, len(unique_serotypes) * 0.8)))
-        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                    xticklabels=unique_serotypes, yticklabels=unique_serotypes)
-        plt.title('Serotype Classification Confusion Matrix')
-        plt.xlabel('Predicted Serotype')
-        plt.ylabel('True Serotype')
-        plt.xticks(rotation=45, ha='right')
-        plt.yticks(rotation=0)
-        plt.tight_layout()
-        plt.savefig(args.output.replace('.txt', '_confusion_matrix.pdf'), dpi=300, bbox_inches='tight')
-        plt.close()
+        conf_matrix = pd.DataFrame(cm, index=unique_serotypes, columns=unique_serotypes)
+        conf_matrix.to_csv(f"{args.output_dir}/confusion_matrix_df.csv")
         
         # Calculate per-serotype confidence statistics
         confidence_stats = []
@@ -217,11 +185,10 @@ def main(args):
         
         confidence_df = pd.DataFrame(confidence_stats)
         if not confidence_df.empty:
-            confidence_output = args.output.replace('.txt', '_confidence_stats.tsv')
+            confidence_output = f"{args.output_dir}/serotype_confidence_stats.tsv"
             confidence_df.to_csv(confidence_output, sep='\t', index=False)
             print(f"Confidence statistics saved to: {confidence_output}")
         
-        # Write results
         print("Serotype Classification Results:")
         print(f"Accuracy: {accuracy:.4f}")
         print(f"F1 Score (weighted): {f1_weighted:.4f}")
@@ -229,7 +196,7 @@ def main(args):
         print("\nClassification Report:")
         print(clf_report)
         
-        with open(args.output, 'w') as f:
+        with open(report_path, 'w') as f:
             f.write("Serotype Classification Results\n")
             f.write("=" * 40 + "\n\n")
             f.write(f"Total samples evaluated: {len(y_true)}\n")
@@ -239,20 +206,16 @@ def main(args):
             f.write(f"F1 Score (macro): {f1_macro:.4f}\n\n")
             f.write("Classification Report:\n")
             f.write(clf_report)
-            f.write("\n\nConfusion Matrix (True x Predicted):\n")
-            f.write("Serotypes: " + ", ".join(unique_serotypes) + "\n")
-            f.write(np.array2string(cm, separator='\t') + "\n")
             
             if not confidence_df.empty:
                 f.write("\n\nPer-Serotype Confidence Statistics:\n")
                 f.write(confidence_df.to_string(index=False))
         
-        print(f"Results saved to: {args.output}")
-        print(f"Confusion matrix plot saved to: {args.output.replace('.txt', '_confusion_matrix.pdf')}")
+        print(f"Results saved to: {args.output_dir}")
         
     else:
         print("No evaluation performed (no true labels provided or found).")
-        with open(args.output, 'w') as f:
+        with open(report_path, 'w') as f:
             f.write("Serotype Prediction Results\n")
             f.write("=" * 40 + "\n\n")
             f.write(f"Total samples processed: {len(labels_df)}\n")
@@ -269,8 +232,8 @@ if __name__ == "__main__":
                         help="Path to .npz embeddings file containing sample embeddings")
     parser.add_argument("--model", required=True,
                         help="Path to the saved TransformerLRClassifier model file (.pth)")
-    parser.add_argument("--output", default="serotype_classifier_output.txt", 
-                        help="Output file for classification report")
+    parser.add_argument("--output_dir", required=True,
+                        help="Output directory for classification report")
     parser.add_argument("--true_labels", 
                         help="TSV file with true serotype labels indexed by sample ID")
     parser.add_argument("--device", default="cpu",
