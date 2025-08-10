@@ -27,18 +27,17 @@ rule locus_cutter:
         fasta=config["fasta"],
         query=config["flank"]
     output:
-        protected(f"{RESULTS_DIR}/complete.fasta"),
-        protected(f"{RESULTS_DIR}/non_cps.fasta"),
+        protected(f"{RESULTS_DIR}/contigs.fasta"),
+        protected(f"{RESULTS_DIR}/contigs_noncbl.fasta"),
     shell:
         """
         python scripts/locus_cutter.py \
-            --fasta {input.fasta} \
+
             --query {input.query} \
-            --output {output} \
             --cutoff 0.7 \
             --infiles /nfs/research/jlees/shorsfield/AtB_gene_predictions/S_pneumoniae_analysis/S_pneumoniae_HQ_abs_paths.txt \
             --outpref {RESULTS_DIR}/contigs \
-            --query /hps/software/users/jlees/shorsfield/software/locus_cutter/testing/dexB_aliA_ATCC700669.fasta
+            --save-noncbl
         """
 
 rule embed_transformer:
