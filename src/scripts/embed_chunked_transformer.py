@@ -2,6 +2,7 @@ import os
 import argparse
 from tqdm import tqdm
 
+import torch
 import numpy as np
 from Bio import SeqIO
 from transformers import AutoTokenizer, AutoModelForMaskedLM
@@ -24,11 +25,19 @@ def main():
     parser.add_argument("--seq_max_len", type=int, default=DEFAULT_MAX_LEN, help="Maximum sequence length for the CONTIGS")
     args = parser.parse_args()
 
+    # Set seeds for reproducible embeddings
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name)
     model = AutoModelForMaskedLM.from_pretrained(args.model_name).to(args.device)
+    model.eval()  # Critical: Set to evaluation mode for deterministic embeddings
 
     max_length = tokenizer.model_max_length
     chunk_size = min(args.chunk_size, max_length)
