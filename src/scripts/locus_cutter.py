@@ -25,12 +25,10 @@ ID_SEP = "__"
 np.random.seed(RND_STATE)
 
 def extract_public_name(file_name):
-    try:
-        public_name = os.path.basename(file_name).split(ID_SEP)[0]
-    except IndexError:
-        public_name = os.path.basename(file_name).split(".")[0]
-        print("Warning: No public name found in file name. Using file name as public name:", public_name)
-    return public_name
+    basename = os.path.basename(file_name)
+    if ID_SEP in basename:
+        return basename.split(ID_SEP)[0]
+    return basename.split(".")[0]
 
 
 def file_handler(file):
