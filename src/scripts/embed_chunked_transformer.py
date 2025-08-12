@@ -50,7 +50,8 @@ def main():
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
         public_name = seq_id.split("__")[0]
-        seq = str(record.seq)[:args.seq_max_len]  # Is it ok to truncate here?
+        seq = str(record.seq)  # [:args.seq_max_len]  # Is it ok to truncate here?
+        # TODO filter somewhere else in a resuable module
 
         chunks = chunk_sequence(seq, args.chunk_size, stride)
         if len(chunks) == 0:
