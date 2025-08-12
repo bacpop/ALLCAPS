@@ -1,9 +1,6 @@
 # Pnuemococcal Serotyping Analysis
 This project aims to propose novel tools and datasets for analyzing pneumococcal capsular biosynthetic loci, the primary target of Pneumococcal Conjugate Vaccines (PCVs).
 
-## Structure
-The project comprises three sections:
-
 ## How to Run
 
 ### Requirements
