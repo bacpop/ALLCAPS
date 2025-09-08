@@ -24,18 +24,17 @@ rule all:
 
 rule locus_cutter:
     input:
-        fasta=config["fasta"],
-        query=config["flank"]
+        query=config["flank"],
+        infiles="/nfs/research/jlees/shared/gps/gps_fasta_paths.txt"
     output:
         protected(f"{RESULTS_DIR}/contigs.fasta"),
         protected(f"{RESULTS_DIR}/contigs_noncbl.fasta"),
     shell:
         """
         python scripts/locus_cutter.py \
-
             --query {input.query} \
             --cutoff 0.7 \
-            --infiles /nfs/research/jlees/shorsfield/AtB_gene_predictions/S_pneumoniae_analysis/S_pneumoniae_HQ_abs_paths.txt \
+            --infiles {input.infiles} \
             --outpref {RESULTS_DIR}/contigs \
             --save-noncbl
         """
