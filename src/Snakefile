@@ -21,6 +21,9 @@ rule all:
         f"{RESULTS_DIR}/f1_distributions.pdf",
         f"{RESULTS_DIR}/distances.npz",
         f"{RESULTS_DIR}/distributions_params.json",
+        f"{RESULTS_DIR}/raw_labels.tsv",
+        f"{RESULTS_DIR}/cleaned_labels.tsv",
+        f"{RESULTS_DIR}/final_labels.tsv"
 
 rule locus_cutter:
     input:
@@ -313,4 +316,43 @@ rule novel_detection:
             --distances {input.distances} \
             --thresholds {params.thresholds} \
             --output-dir {RESULTS_DIR}
+        """
+
+rule generate_raw_labels:
+    input:
+        fasta=config["fasta"],
+        metadata=config["metadata"]
+    output:
+        f"{RESULTS_DIR}/raw_labels.tsv"
+    shell:
+        """
+        python scripts/generate_raw_labels.py \
+            --fasta {input.fasta} \
+            --metadata {input.metadata} \
+            --output {output}
+        """
+
+rule labels_preprocessing:
+    input:
+        f"{RESULTS_DIR}/raw_labels.tsv"
+    output:
+        f"{RESULTS_DIR}/cleaned_labels.tsv"
+    shell:
+        """
+        python scripts/labels_preprocessing.py \
+            --raw_labels {input} \
+            --output_dir {RESULTS_DIR}
+        """
+
+rule labels_postprocessing:
+    input:
+        labels=f"{RESULTS_DIR}/cleaned_labels.tsv",
+        chunks_dir=directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
+    output:
+        f"{RESULTS_DIR}/final_labels.tsv"
+    shell:
+        """
+        python scripts/labels_postprocessing.py \
+            --clean_labels {input} \
+            --output_dir {RESULTS_DIR}
         """
