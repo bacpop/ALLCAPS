@@ -8,6 +8,7 @@ config.yaml
 results/
 .snakemake
 .idea
+.vscode
 wandb/
 
 ### PyCharm ###
