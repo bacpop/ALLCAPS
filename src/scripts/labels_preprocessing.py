@@ -4,14 +4,11 @@ It takes a raw labels TSV file and outputs a cleaned version with standardized s
 """
 
 # Example usage: python src/scripts/labels_preprocessing.py --raw_labels data/GPS_All_raw_labels.tsv --output_dir results/
-import os
 import re
 import pandas as pd
 import numpy as np
 import argparse
 from pathlib import Path
-
-from consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP
 
 
 def cleanup_serotype(value):
