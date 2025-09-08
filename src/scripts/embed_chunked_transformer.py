@@ -35,8 +35,8 @@ def main():
     if not os.path.exists(args.out_dir):
         os.makedirs(args.out_dir)
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
-    model = AutoModelForMaskedLM.from_pretrained(args.model_name).to(args.device)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
+    model = AutoModelForMaskedLM.from_pretrained(args.model_name, trust_remote_code=True).to(args.device)
     model.eval()  # Critical: Set to evaluation mode for deterministic embeddings
 
     max_length = tokenizer.model_max_length
@@ -50,7 +50,7 @@ def main():
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
         public_name = seq_id.split("__")[0]
-        seq = str(record.seq)  # [:args.seq_max_len]  # Is it ok to truncate here?
+        seq = str(record.seq)[:args.seq_max_len]  # TODO Is it ok to truncate here?
         # TODO filter somewhere else in a resuable module
 
         chunks = chunk_sequence(seq, args.chunk_size, stride)
