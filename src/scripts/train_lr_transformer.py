@@ -190,9 +190,7 @@ def main(args):
     noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
     if os.path.exists(noncbl_subdir):
         print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
-        non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
-        non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
-        
+        non_cbl_embeddings = [f.split(".")[0] for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
         non_cbl_labels = pd.DataFrame({
             'Serotype': [non_cbl_label] * len(non_cbl_embeddings),
         }, index=non_cbl_embeddings)

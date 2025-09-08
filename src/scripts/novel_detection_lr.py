@@ -192,12 +192,11 @@ def main(args):
             )
             
             # Extract results for this single sequence
-            query_cbl_logits = query_cbl_logits[0][0]  # (1, 1, 2) -> (2,)
-            query_serotype_logits = query_serotype_logits[0][0]  # (1, 1, num_classes) -> (num_classes,)
+            query_cbl_logits = query_cbl_logits[0].flatten()  # (1, 2) -> (2,)
+            query_serotype_logits = query_serotype_logits[0].flatten()  # (1, num_classes) -> (num_classes,)
             query_embedding = query_embedding[0]  # (1, output_dim) -> (output_dim,)
-            
             cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
-            
+            print(cbl_predictions)
             results[record.id] = {
                 "cbl_logits": query_cbl_logits,
                 "serotype_logits": query_serotype_logits,
@@ -209,11 +208,11 @@ def main(args):
     results_df["pred_argmax"] = results_df["serotype_logits"].apply(
         lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
     )
-    results_df["pred_cbl"] = results_df["cbl_logits"].apply(lambda x: "cbl" if x[1] > thresholds[0] else "non-cbl")
     # results_df["logits_energy"] = results_df["serotype_logits"].apply(lambda x: energy_score(torch.tensor(x), temperature=1.0))
 
-    true_pos = (results_df["pred_argmax"] == results_df["ground_truth"]).mean()
-    print(f"True positive rate: {true_pos:.4f}")
+    if args.embeddings:
+        true_pos = (results_df["pred_argmax"] == results_df["ground_truth"]).mean()
+        print(f"True positive rate: {true_pos:.4f}")
     results_df \
         .drop(columns=["embedding", "serotype_logits"]) \
         .to_csv(os.path.join(args.output_dir, "query_results.csv"), index=False)

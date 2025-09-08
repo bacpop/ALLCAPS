@@ -207,9 +207,9 @@ def embed_chunks(chunks, tokenizer, model, device, max_length):
     inputs = tokenizer(
         chunks,
         return_tensors="pt",
-        padding="max_length",
-        truncation=True,
-        max_length=max_length
+        # padding="max_length",
+        # truncation=True,
+        # max_length=max_length
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():

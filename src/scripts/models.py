@@ -23,22 +23,25 @@ class ContrastiveHead(nn.Module):
 
 
 class ContrastiveChunkedDataset(Dataset):
-    def __init__(self, embeddings_dir, sampled_ids, serotype_labels, capsule_labels):
+    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels):
         """
         embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
         serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
         """
         self.embedding_dir = embeddings_dir
-        self.sample_ids = sampled_ids
         self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
 
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
-        file_names = [os.path.basename(f) for f in all_embeddings]
-        assert pd.Series(self.sample_ids).isin([f.split(".")[0] for f in file_names]).all(), \
-            "Some serotype_labels do not have a corresponding embedding file: {}".format(
-                set(self.sample_ids) - set([f.split(".")[0] for f in file_names])
-            )
+        file_names = [os.path.basename(f).split(".")[0] for f in all_embeddings]
+        self.sample_ids = sample_ids[pd.Series(sample_ids).isin(file_names)].tolist()
+
+        print(self.sample_ids[:2], file_names[:2])
+        missing_samples = set(self.sample_ids) - set(file_names)
+        if missing_samples:
+            print("{} sample_ids do not have a corresponding embedding file: {}".format(
+                len(missing_samples), missing_samples
+            ))
 
     def __len__(self) -> int:
         return len(self.sample_ids)
