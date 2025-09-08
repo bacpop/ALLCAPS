@@ -20,7 +20,7 @@ from consts import (
     RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
     DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
     DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
-    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM,
+    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM, CONTIG_SEP,
     DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL, DEFAULT_LABEL_COLUMN,
     DEFAULT_EARLY_STOPPING, DEFAULT_CONTRASTIVE_LOSS_RATIO
 )
@@ -187,15 +187,6 @@ def main(args):
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
     labels['Serotype'] = labels[label_column].fillna(missing_label)
 
-    noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
-    if os.path.exists(noncbl_subdir):
-        print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
-        non_cbl_embeddings = [f.split(".")[0] for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
-        non_cbl_labels = pd.DataFrame({
-            'Serotype': [non_cbl_label] * len(non_cbl_embeddings),
-        }, index=non_cbl_embeddings)
-        labels = pd.concat([labels, non_cbl_labels], axis=0)
-
     indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
     if args.skip_labels:
         skip_indices = labels['Serotype'].isin(args.skip_labels)
@@ -235,8 +226,8 @@ def main(args):
         labels_known = fine_labels
         loss_function = supervised_contrastive_loss
 
-    sample_ids = labels.index[indices].tolist()
-    is_capsule = (labels['Serotype'] != non_cbl_label).astype(int)[indices].tolist()
+    sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices]).tolist()
+    is_capsule = labels["Is_capsule"]  # (labels['Serotype'] != non_cbl_label).astype(int)[indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X

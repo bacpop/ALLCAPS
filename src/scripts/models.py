@@ -36,7 +36,6 @@ class ContrastiveChunkedDataset(Dataset):
         file_names = [os.path.basename(f).split(".")[0] for f in all_embeddings]
         self.sample_ids = sample_ids[pd.Series(sample_ids).isin(file_names)].tolist()
 
-        print(self.sample_ids[:2], file_names[:2])
         missing_samples = set(self.sample_ids) - set(file_names)
         if missing_samples:
             print("{} sample_ids do not have a corresponding embedding file: {}".format(
