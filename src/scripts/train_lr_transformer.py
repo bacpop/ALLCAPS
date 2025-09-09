@@ -227,7 +227,7 @@ def main(args):
         loss_function = supervised_contrastive_loss
 
     sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices]).tolist()
-    is_capsule = labels["Is_capsule"]  # (labels['Serotype'] != non_cbl_label).astype(int)[indices].tolist()
+    is_capsule = labels["Is_capsule"][indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X
