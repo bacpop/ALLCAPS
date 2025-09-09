@@ -31,10 +31,11 @@ class ContrastiveChunkedDataset(Dataset):
         self.embedding_dir = embeddings_dir
         self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
+        self.sample_ids = sample_ids
 
+        # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
         file_names = [os.path.basename(f).split(".")[0] for f in all_embeddings]
-        self.sample_ids = sample_ids[pd.Series(sample_ids).isin(file_names)].tolist()
 
         missing_samples = set(self.sample_ids) - set(file_names)
         if missing_samples:
