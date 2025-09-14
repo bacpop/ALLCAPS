@@ -1,6 +1,5 @@
 #!/usr/bin/env python
 
-import os
 import json
 import argparse
 import numpy as np
@@ -14,53 +13,35 @@ from models import TransformerLRClassifier, ContrastiveChunkedDataset
 from utils import collate_fn
 
 from consts import (
-    DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL,
-    DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
+    CONTIG_SEP, DEFAULT_MISSING_LABEL, DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
 )
 
 
 def main(args):
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
-    noncbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     sep = args.model_params.get("sep", DEFAULT_SEP)
     
     device = torch.device(args.device)
-    
-    print(f"Loading embeddings from: {args.embeddings_dir}")
+
+    print(f"Loading labels from: {args.labels}")
     labels = pd.read_csv(args.labels, sep="\t", index_col=0)
     labels['Serotype'] = labels[label_column].fillna(missing_label)
 
-    is_duplicate = labels.duplicated()
-    if is_duplicate.any():
-        print("Dropping duplicate label rows...")
-        labels = labels[~is_duplicate]
     if args.skip_labels:
         indices_to_skip = labels['Serotype'].isin(args.skip_labels)
         print(f"Skipping labels: {args.skip_labels}, {indices_to_skip.sum()} rows will be skipped.")
         labels = labels[~indices_to_skip]
-    
-    # Add non-CBL embeddings if they exist
-    noncbl_subdir = os.path.join(args.embeddings_dir, "non-cbl")
-    if os.path.exists(noncbl_subdir):
-        print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
-        non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
-        non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
-        
-        non_cbl_labels = pd.DataFrame({
-            'Serotype': [noncbl_label] * len(non_cbl_embeddings),
-        }, index=non_cbl_embeddings)
-        labels = pd.concat([labels, non_cbl_labels], axis=0)
 
     if args.labeled_only:
         known_indices = labels['Serotype'] != missing_label
         labels = labels[known_indices]
 
-    sequences = labels.index.tolist()
+    sample_ids = (labels.index + CONTIG_SEP + labels["Contig_ID"]).tolist()
     serotype_labels = labels["Serotype"].tolist()
-    capsule_labels = (labels["Serotype"] != noncbl_label).astype(int).tolist()
+    capsule_labels = labels["Is_capsule"].tolist()
 
-    dataset = ContrastiveChunkedDataset(args.embeddings_dir, sequences, serotype_labels, capsule_labels)
+    dataset = ContrastiveChunkedDataset(args.embeddings_dir, sample_ids, serotype_labels, capsule_labels)
     loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
 
     print(f"Loading model from: {args.model}")
@@ -119,24 +100,6 @@ def main(args):
 
     np.savez_compressed(args.output, **all_embeddings)
     print(f"Embeddings saved to: {args.output}")
-    
-    if args.save_predictions:
-        predictions_output = args.output.replace('.npz', '_predictions.json')
-        predictions = {
-            'cbl_predictions': all_cbl_predictions,
-            'serotype_predictions': all_serotype_predictions,
-            'serotype_to_idx': serotype_to_idx
-        }
-        
-        with open(predictions_output, 'w') as f:
-            # Convert numpy arrays to lists for JSON serialization
-            for key in predictions['serotype_predictions']:
-                if 'probabilities' in predictions['serotype_predictions'][key]:
-                    predictions['serotype_predictions'][key]['probabilities'] = \
-                        list(map(float, predictions['serotype_predictions'][key]['probabilities'].tolist()))
-
-            json.dump(predictions, f, indent=2)
-        print(f"Predictions saved to: {predictions_output}")
 
 
 def parse_args():
@@ -159,8 +122,6 @@ def parse_args():
                         help="Comma-separated list of labels to skip in inference.")
     parser.add_argument("--labeled_only", action="store_true",
                         help="Only process samples with known labels.")
-    parser.add_argument("--save_predictions", action="store_true",
-                        help="Save CBL and serotype predictions along with embeddings.")
     
     args = parser.parse_args()
     

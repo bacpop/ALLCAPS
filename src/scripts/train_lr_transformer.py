@@ -21,7 +21,7 @@ from consts import (
     DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
     DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
     DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM, CONTIG_SEP,
-    DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL, DEFAULT_LABEL_COLUMN,
+    DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN,
     DEFAULT_EARLY_STOPPING, DEFAULT_CONTRASTIVE_LOSS_RATIO
 )
 
@@ -180,7 +180,6 @@ def main(args):
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
 
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
-    non_cbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     
     print("Loading data...")
