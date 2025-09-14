@@ -40,6 +40,7 @@ def main():
         [1, 0], ["base_embeddings_chunked/cbl", "base_embeddings_chunked/non-cbl"]
     ):
         names = [f.split(".")[0] for f in os.listdir(output_path / subdir)]
+        names = [name for name in names if name.endswith(".npy")]
         public_ids, contig_ids = zip(*[name.split(CONTIG_SEP) for name in names])
         if is_capsule:
             serotypes = (

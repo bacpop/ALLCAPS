@@ -8,19 +8,32 @@ import pandas as pd
 from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
 
 from models import TransformerLRClassifier
-from consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL
-from utils import load_data
+from consts import (
+    DEFAULT_LABEL_COLUMN, DEFAULT_NONCBL_LABEL, DEFAULT_SEP,
+    DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP
+)
 
 
 def main(args):
     device = torch.device(args.device)
 
     sep = args.model_params.get("sep", DEFAULT_SEP)
+    label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
+    noncbl_label = args.model_params.get("noncbl_label", DEFAULT_NONCBL_LABEL)
     
-    print(f"Loading embeddings from: {args.embeddings}")
-    X_filtered, labels_df = load_data(args.embeddings, args.labels, sep=sep)
-    
+    print(f"Loading embeddings and labels")
+    X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
+    labels_df = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels_df['Serotype'] = labels_df[label_column].fillna(missing_label)  # TODO should be empty already
+    labels_df = labels_df[labels_df["Serotype"] != missing_label]
+
+    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") \
+        + sep \
+        + (labels_df.index + CONTIG_SEP + labels_df["Contig_ID"])
+    X_filtered = np.stack([X[key] for key in keys])
+    print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
+
     print(f"Loading model from: {args.model}")
     model_save_dict = torch.load(args.model, map_location=device)
     model_config = model_save_dict['model_config']
@@ -87,7 +100,9 @@ def main(args):
     print(f"Predictions saved to: {predictions_output}")
     
     report_path = f"{args.output_dir}/classification_report.txt"
-    if args.true_labels and 'Serotype' in labels_df.columns:
+    # Exclude NON-CBL
+    labels_df = labels_df[labels_df["Serotype"] != noncbl_label].copy()
+    if args.labels and 'Serotype' in labels_df.columns:
         y_true = labels_df['Serotype'].values
         y_pred = labels_df['predicted_serotype'].values
         
@@ -180,12 +195,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Evaluate serotype classification using TransformerLRClassifier")
     parser.add_argument("--embeddings", required=True, 
                         help="Path to .npz embeddings file containing sample embeddings")
+    parser.add_argument("--labels", 
+                        help="TSV file with true serotype labels indexed by sample ID")
     parser.add_argument("--model", required=True,
                         help="Path to the saved TransformerLRClassifier model file (.pth)")
     parser.add_argument("--output_dir", required=True,
                         help="Output directory for classification report")
-    parser.add_argument("--true_labels", 
-                        help="TSV file with true serotype labels indexed by sample ID")
     parser.add_argument("--device", default="cpu",
                         help="Device to use for inference (cpu or cuda)")
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE,
