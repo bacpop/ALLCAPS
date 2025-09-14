@@ -49,17 +49,22 @@ def main():
     total = sum(1 for _ in SeqIO.parse(args.fasta, "fasta"))
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
-        public_name = seq_id.split("__")[0]
-        seq = str(record.seq)[:args.seq_max_len]  # TODO Is it ok to truncate here?
-        # TODO filter somewhere else in a resuable module
+        sample_name = seq_id.split("__")[0]  # Public ID + Contig ID
+        chunks_path = os.path.join(args.out_dir, f"{sample_name}.npy")
+        if os.path.exists(chunks_path):
+            print(f"Skipping {sample_name} as it already exists.")
 
+        # TODO filter somewhere else in a resuable module
+        seq = str(record.seq)[:args.seq_max_len]  # TODO Is it ok to truncate here?
         chunks = chunk_sequence(seq, args.chunk_size, stride)
         if len(chunks) == 0:
-            print(f"Skipping {public_name} due to no valid chunks.")
+            print(f"Skipping {sample_name} due to no valid chunks.")
             continue
-
-        pooled = embed_chunks(chunks, tokenizer, model, args.device, max_length)  # shape (L, D)
-        np.save(os.path.join(args.out_dir, f"{public_name}.npy"), pooled.numpy())  # tensor [L, D]
+        try:
+            pooled = embed_chunks(chunks, tokenizer, model, args.device, max_length)  # shape (L, D)
+            np.save(chunks_path, pooled.numpy())  # tensor [L, D]
+        except Exception as e:
+            print(f"Error processing {sample_name}: {e}")
 
     print(f"Saved {total} chunked sequences to {args.out_dir}")
 
