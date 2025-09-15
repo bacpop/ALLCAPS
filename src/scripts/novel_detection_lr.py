@@ -1,5 +1,6 @@
 import argparse
 import os
+import json
 
 import numpy as np
 import pandas as pd
@@ -9,11 +10,11 @@ from typing import List, Tuple
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from models import TransformerLRClassifier
+from models import ModelRegistry, TransformerLRClassifier
 from consts import (
     DEFAULT_MIN_SEROGROUP_SIZE, DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
     DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN, DEFAULT_SEP,
-    DEFAULT_BATCH_SIZE
+    DEFAULT_BATCH_SIZE, CONTIG_SEP
 )
 from utils import chunk_sequence, embed_chunks, load_data
 
@@ -31,8 +32,8 @@ def energy_score(logits, temperature=1.0) -> float:
 
 
 def transformer_embedding(  # TODO batch this 
-    tokenizer,
-    nt_model,
+    tokenizer: AutoTokenizer,
+    base_model: AutoModelForMaskedLM,
     logistic_model: TransformerLRClassifier,
     sequences: List[str],
     device: str = "cuda",
@@ -57,11 +58,11 @@ def transformer_embedding(  # TODO batch this
         # Chunk the sequence
         chunks = chunk_sequence(seq, chunk_size, stride)
         if not chunks:
-            print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
-            continue
+            # print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
+            chunks = [seq]
         
         # Get raw chunked embeddings from NT model
-        pooled = embed_chunks(chunks, tokenizer, nt_model, device, max_length)  # shape (L, D)    
+        pooled = embed_chunks(chunks, tokenizer, base_model, device, max_length)  # shape (L, D)    
 
         # Feed through the full logistic transformer model (like training pipeline)
         with torch.no_grad():
@@ -108,13 +109,12 @@ def head_model_inference(
 
 
 def main(args):
-    ### TODO introduce params
-    nt_model_name = DEFAULT_MODEL
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    chunk_size = DEFAULT_CHUNK_SIZE
-    stride_ratio = DEFAULT_STRIDE_RATIO
-    max_length = DEFAULT_MAX_LEN
-    batch_size = DEFAULT_BATCH_SIZE
+
+    chunk_size = args.model_params.get("chunk_size", DEFAULT_CHUNK_SIZE)
+    stride_ratio = args.model_params.get("stride_ratio", DEFAULT_STRIDE_RATIO)
+    max_length = args.model_params.get("max_length", DEFAULT_MAX_LEN)
+    batch_size = args.model_params.get("batch_size", DEFAULT_BATCH_SIZE)
     
     # Set seeds for reproducibility
     torch.manual_seed(42)
@@ -128,41 +128,37 @@ def main(args):
     assert len(thresholds) == 4, "Four thresholds are required."
     assert all(0 < t < 1 for t in thresholds), "Thresholds must be between 0 and 1."
 
-    print("Loading the transformer model and contrastive head...")
-    tokenizer = AutoTokenizer.from_pretrained(nt_model_name)
-    nt_model = AutoModelForMaskedLM.from_pretrained(nt_model_name).to(device)
-    nt_model.eval()  # Set to eval mode for deterministic behavior
+    print(f"Loading the {args.base_model} base model...")
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
+    base_model = AutoModelForMaskedLM.from_pretrained(args.base_model, trust_remote_code=True).to(device)
+    base_model.eval()  # Set to eval mode for deterministic behavior
     
+    print("Loading the transformer and logistic regression model...")
     model_path = os.path.join(args.output_dir, "transformer_model.pth")
     model_save_dict = torch.load(model_path, map_location=device)
     model_config = model_save_dict['model_config']
     idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
     
     # Initialize model with saved configuration
-    logistic_model = TransformerLRClassifier(
-        input_dim=model_config['input_dim'],
-        num_classes=model_config['num_classes'],
-        output_dim=model_config['output_dim'],
-        nhead=model_config['nhead'],
-        num_layers=model_config['num_layers']
-    ).to(device)
+    logistic_model = ModelRegistry.get_model_class(args.head_model) \
+        .from_config(model_config) \
+        .to(device)
     logistic_model.load_state_dict(model_save_dict['model_state_dict'])
     logistic_model.eval()
 
     results = dict()
     if args.embeddings:
-        assert args.labels, "Labels file is required when embeddings are provided."
         print("Loading embeddings and labels...")
         embeddings, labels = load_data(args.embeddings, args.labels, sep=DEFAULT_SEP)
         print(f"Loaded embeddings shape: {embeddings.shape}")
         print(f"Expected embedding dimension: {model_config['output_dim']}")
-        # sample_size = 1000
-        # assert len(embeddings) >= sample_size, f"Not enough embeddings: {len(embeddings)} < {sample_size}"
-        # print(f"Sampling {sample_size} embeddings from {len(embeddings)} total.")
-        # indices = np.random.choice(len(embeddings), sample_size, replace=False)
-        # embeddings = embeddings[indices]
-        # labels = labels.iloc[indices]
-        print("Running inference on embeddings...")
+
+        sample_size = 10000
+        print(f"Sampling {sample_size} embeddings from {len(embeddings)} total.")
+        indices = np.random.choice(len(embeddings), sample_size, replace=False)
+        embeddings, labels = embeddings[indices], labels.iloc[indices]
+        labels['sample_id'] = labels.index + CONTIG_SEP + labels['Contig_ID']
+        print("Running inference on embeddings...") 
         # Note: embeddings are expected to be final projected embeddings (z) from the model
         cbl_logits, serotype_logits = head_model_inference(logistic_model, embeddings, batch_size=batch_size)
         for sample in tqdm(range(len(embeddings))):
@@ -182,7 +178,7 @@ def main(args):
             print(f"Processing query: {record.id}...")
             query_cbl_logits, query_serotype_logits, query_embedding = transformer_embedding(
                 tokenizer=tokenizer,
-                nt_model=nt_model,
+                base_model=base_model,
                 logistic_model=logistic_model,
                 sequences=[str(record.seq)],
                 device=device,
@@ -192,8 +188,8 @@ def main(args):
             )
             
             # Extract results for this single sequence
-            query_cbl_logits = query_cbl_logits[0].flatten()  # (1, 2) -> (2,)
-            query_serotype_logits = query_serotype_logits[0].flatten()  # (1, num_classes) -> (num_classes,)
+            query_cbl_logits = query_cbl_logits[0, 0]  # (1, 1, 2) -> (2,)
+            query_serotype_logits = query_serotype_logits[0, 0]  # (1, 1, num_classes) -> (num_classes,)
             query_embedding = query_embedding[0]  # (1, output_dim) -> (output_dim,)
             cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
             print(cbl_predictions)
@@ -211,7 +207,13 @@ def main(args):
     # results_df["logits_energy"] = results_df["serotype_logits"].apply(lambda x: energy_score(torch.tensor(x), temperature=1.0))
 
     if args.embeddings:
-        true_pos = (results_df["pred_argmax"] == results_df["ground_truth"]).mean()
+        true_cbl = results_df["ground_truth"] != "NON-CBL"
+        correct_serotype = results_df["pred_argmax"] == results_df["ground_truth"]
+        correct_serotype = correct_serotype | ~true_cbl  # Ignore serotype accuracy for non-CBL samples
+        correct_cbl = results_df["is_cbl"] == true_cbl
+        true_pos = (correct_serotype & correct_cbl).mean()
+        print(f"Serotype accuracy: {correct_serotype.mean():.4f}")
+        print(f"CBL accuracy: {correct_cbl.mean():.4f}")
         print(f"True positive rate: {true_pos:.4f}")
     results_df \
         .drop(columns=["embedding", "serotype_logits"]) \
@@ -231,14 +233,33 @@ def parse_args():
     parser.add_argument("--thresholds", type=str, default=f"{THRESH_CPS},{THRESH_NONCPS},{NORM_NONCBL_PPF},{THRESH_BETA}",
         help="Comma-separated thresholds for novelty detection."  # TODO: explain the thresholds.
     )
+    parser.add_argument("--model_params", type=str, default="{}",
+                        help="JSON string of model parameters")
+    parser.add_argument("--base_model", type=str, default=DEFAULT_MODEL,
+                        help="Name of the base transformer model to use for initial inference.")
+    parser.add_argument("--head_model", type=str, default="transformer_lr_classifier",
+                        help="Name of the head model to use.")
 
     args = parser.parse_args()
+    
+    try:
+        args.model_params = json.loads(args.model_params)
+        if not isinstance(args.model_params, dict):
+            print("Model parameters should be a JSON object.")
+            args.model_params = {}
+    except json.JSONDecodeError:
+        print("Error parsing model parameters JSON string.")
+        args.model_params = {}
+    finally:
+        print("Model parameters:", args.model_params)
+
     if not args.query and not args.embeddings:
         parser.error("Either --query or --embeddings must be provided.")
     if args.query and args.embeddings:
         parser.error("Only one of --query or --embeddings can be provided.")
     if args.embeddings and not args.labels:
         parser.error("If --embeddings is provided, --labels must also be specified.")
+
     return args
 
 if __name__ == "__main__":
