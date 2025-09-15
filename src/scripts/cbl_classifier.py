@@ -9,14 +9,7 @@ from sklearn.metrics import classification_report, f1_score, roc_curve, auc
 import matplotlib.pyplot as plt
 
 from models import TransformerLRClassifier
-from consts import (
-    DEFAULT_NUM_LAYERS,
-    DEFAULT_NHEAD,
-    DEFAULT_OUTPUT_DIM,
-    DEFAULT_EMBEDDING_DIM,
-    DEFAULT_SEP,
-    DEFAULT_BATCH_SIZE,
-)
+from consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE
 
 
 def main(args):
