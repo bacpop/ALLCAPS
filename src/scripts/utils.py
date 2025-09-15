@@ -7,7 +7,7 @@ import numpy as np
 from typing import Tuple
 import pandas as pd
 
-from consts import DEFAULT_SEP
+from consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL
 EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of
@@ -207,9 +207,9 @@ def embed_chunks(chunks, tokenizer, model, device, max_length):
     inputs = tokenizer(
         chunks,
         return_tensors="pt",
-        # padding="max_length",
-        # truncation=True,
-        # max_length=max_length
+        # padding="max_length",  # TODO
+        # truncation=True,  # TODO
+        # max_length=max_length  # TODO
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
@@ -219,57 +219,17 @@ def embed_chunks(chunks, tokenizer, model, device, max_length):
     return pooled.cpu()
 
 
-def load_data(embeddings_path: str, labels_path: str, sep: str = DEFAULT_SEP) -> Tuple[np.ndarray, pd.DataFrame]:
+def load_data(
+    embeddings_path: str, labels_path: str, sep: str = DEFAULT_SEP, missing_label: str = DEFAULT_MISSING_LABEL
+) -> Tuple[np.ndarray, pd.DataFrame]:
     X = np.load(embeddings_path, allow_pickle=True)  # shape: (N, L, D)
+    labels_df = pd.read_csv(labels_path, sep="\t", index_col=0)
+    labels_df["Serotype"] = labels_df["Serotype"].fillna(missing_label)  # TODO should be empty already
+    labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
-    # Parse sample IDs and extract labels
-    sample_keys = list(X.keys())
-    labels_data = []
-    for key in sample_keys:
-        parts = key.split(sep)
-        if len(parts) >= 2:
-            capsule_label = parts[0]
-            sample_id = sep.join(parts[1:])  # In case sample ID contains the separator
-            labels_data.append({
-                'key': key,
-                'capsule_label': capsule_label,
-                'sample_id': sample_id
-            })
-        else:
-            print(f"Warning: Skipping malformed key: {key}")
-    
-    labels_df = pd.DataFrame(labels_data)
-    labels_df['is_capsule'] = labels_df['capsule_label'].map(lambda x: 1 if x == "cbl" else 0).astype(int)
-    
-    # Load true serotype labels if provided
-    if labels_path:
-        print(f"Loading true labels from: {labels_path}")
-        true_labels = pd.read_csv(labels_path, sep="\t", index_col=0)
-
-        # Match sample IDs with true labels
-        labels_df = labels_df.merge(
-            true_labels, 
-            left_on='sample_id', 
-            right_index=True, 
-            how='inner'
-        )
-        
-        # Filter to only capsulated samples for serotype classification
-        capsule_mask = labels_df['is_capsule'] == 1
-        if not capsule_mask.any():
-            print("No capsulated samples found. Cannot perform serotype classification.")
-            return np.array([]), pd.DataFrame()
-            
-        labels_df = labels_df[capsule_mask].copy()
-        print(f"Found {len(labels_df)} capsulated samples for serotype classification")
-    else:
-        print("No true labels provided. Will only extract predictions without evaluation.")
-        # Filter to only capsulated samples
-        capsule_mask = labels_df['is_capsule'] == 1
-        labels_df = labels_df[capsule_mask].copy()
-        print(f"Found {len(labels_df)} capsulated samples")
-    
-    # Get embeddings for selected samples
-    X_filtered = np.stack([X[key] for key in labels_df['key']])
+    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") \
+        + sep \
+        + (labels_df.index + CONTIG_SEP + labels_df["Contig_ID"])
+    X_filtered = np.stack([X[key] for key in keys])
     print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
     return X_filtered, labels_df
