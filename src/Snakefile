@@ -1,150 +1,124 @@
 configfile: "config.yaml"
 RESULTS_DIR = config["results_dir"]
 
+# Validation function for model parameters
+def validate_model_params(config):
+    required_keys = ["embedding_dim"]  # Important keys. Probably should be require arguments, but whatever.
+    model_params = config.get("model_params", {})
+    missing_keys = [key for key in required_keys if key not in model_params]
+    if missing_keys:
+        raise ValueError(f"Missing required model_params keys: {missing_keys}")
+
+# Validate configuration on load
+validate_model_params(config)
+
 rule all:
     input:
-        f"{RESULTS_DIR}/complete.fasta",
-        f"{RESULTS_DIR}/non_cps.fasta",
-        f"{RESULTS_DIR}/base_embeddings.npy",
-        f"{RESULTS_DIR}/base_embeddings_chunked",
-        f"{RESULTS_DIR}/base_umap.pdf",
-        f"{RESULTS_DIR}/contrastive_head.pth",
-        f"{RESULTS_DIR}/contrastive_model.pth",
-        f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        f"{RESULTS_DIR}/contrastive_embeddings.npz",
-        f"{RESULTS_DIR}/contrastive_umap.pdf",
-        f"{RESULTS_DIR}/knn_report.txt",
+        # Embedding directories
+        f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
+        f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+        # Model and processing outputs
+        f"{RESULTS_DIR}/final_metadata.tsv",
+        f"{RESULTS_DIR}/transformer_model.pth",
+        f"{RESULTS_DIR}/inference_results.npz",
+        # Visualization and analysis outputs
+        f"{RESULTS_DIR}/tsne_visualization.pdf",
+        f"{RESULTS_DIR}/cbl_results.txt",
+        f"{RESULTS_DIR}/serotype_predictions.txt",
+        f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
+        f"{RESULTS_DIR}/classification_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
-        f"{RESULTS_DIR}/kmer_sketch.npz",
-        f"{RESULTS_DIR}/lda_rf_report.txt",
-        f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv",
-        f"{RESULTS_DIR}/f1_distributions.pdf",
-        f"{RESULTS_DIR}/distances.npz",
-        f"{RESULTS_DIR}/distributions_params.json",
-        f"{RESULTS_DIR}/raw_labels.tsv",
-        f"{RESULTS_DIR}/cleaned_labels.tsv",
-        f"{RESULTS_DIR}/final_labels.tsv"
+        # Novel detection outputs
+        f"{RESULTS_DIR}/query_results.csv"
 
-rule locus_cutter:
+rule infer_chunks_cbl:
     input:
-        query=config["flank"],
-        infiles="/nfs/research/jlees/shared/gps/gps_fasta_paths.txt"
+        fasta=config["cbl_fasta"]  # TODO bring back locus cutter
     output:
-        protected(f"{RESULTS_DIR}/contigs.fasta"),
-        protected(f"{RESULTS_DIR}/contigs_noncbl.fasta"),
-    shell:
-        """
-        python scripts/locus_cutter.py \
-            --query {input.query} \
-            --cutoff 0.7 \
-            --infiles {input.infiles} \
-            --outpref {RESULTS_DIR}/contigs \
-            --save-noncbl
-        """
-
-rule embed_transformer:
-    input:
-        fasta=config["fasta"]
-    output:
-        protected(f"{RESULTS_DIR}/base_embeddings.npy")
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked/cbl")
     params:
-        model_name=config["model_name"],
-        device=config["device"]
-    shell:
-        """
-        python scripts/embed_transformer.py \
-            --fasta {input.fasta} \
-            --output {output} \
-            --model_name {params.model_name} \
-            --device {params.device}
-        """
-
-rule embed_transformer_chunked:
-    input:
-        fasta=config["fasta"]
-    output:
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked")
-    params:
-        model_name=config["model_name"],
+        base_model=config["base_model"],
         device=config["device"],
-        chunk_size=1000,
-        stride_ratio=0.5
+        chunk_size=config["chunk_size"],
+        stride_ratio=config["stride_ratio"]
     shell:
         """
         python scripts/embed_chunked_transformer.py \
             --fasta {input.fasta} \
             --out_dir {output} \
-            --model_name {params.model_name} \
+            --model_name {params.base_model} \
             --chunk_size {params.chunk_size} \
             --stride_ratio {params.stride_ratio} \
             --device {params.device}
         """
 
-rule kmer_sketch:
+rule infer_chunks_noncbl:
     input:
-        fasta=config["fasta"]
+        fasta=config["noncbl_fasta"]  # TODO bring back locus cutter
     output:
-        protected(f"{RESULTS_DIR}/kmer_sketch.npz")
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl")
     params:
-        k=config["sketch_k"],
-        sketch_size=config["sketch_size"],
-    shell:
-        """
-        python scripts/kmer_sketch.py \
-            --fasta {input.fasta} \
-            --output {output} \
-            --k {params.k} \
-            --sketch_size {params.sketch_size}
-        """
-
-# TODO adjust for old embeddings
-rule visualize_umap:
-    input:
-        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
-        labels=config["labels"]
-    output:
-        f"{RESULTS_DIR}/base_umap.pdf"
-    shell:
-        """
-        python scripts/umap_visualize.py \
-            --embeddings {input.embeddings} \
-            --labels {input.labels} \
-            --output {output} \
-            --title "Base Transformer Embeddings UMAP"
-        """
-
-rule train_contrastive:
-    input:
-        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
-        labels=config["labels"]
-    output:
-        f"{RESULTS_DIR}/contrastive_head.pth"
-    params:
+        base_model=config["base_model"],
         device=config["device"],
-        epochs=config["epochs"],
-        batch_size=config["batch_size"],
-        lr=config["lr"]
+        chunk_size=config["chunk_size"],
+        stride_ratio=config["stride_ratio"]
     shell:
         """
-        python scripts/train_contrastive.py \
-            --embeddings {input.embeddings} \
-            --labels {input.labels} \
-            --output {output} \
-            --device {params.device} \
-            --epochs {params.epochs} \
-            --batch_size {params.batch_size} \
-            --lr {params.lr} \
-            --model-params '{config[model_params]}' \
-            --labeled-only \
-            --hierarchical-loss
+        python scripts/embed_chunked_transformer.py \
+            --fasta {input.fasta} \
+            --out_dir {output} \
+            --model_name {params.base_model} \
+            --chunk_size {params.chunk_size} \
+            --stride_ratio {params.stride_ratio} \
+            --device {params.device}
         """
 
-rule train_contrastive_transformer:
+# rule generate_raw_labels:
+#     input:
+#         fasta=config["fasta"],
+#         metadata=config["metadata"]
+#     output:
+#         f"{RESULTS_DIR}/raw_labels.tsv"
+#     shell:
+#         """
+#         python scripts/generate_raw_labels.py \
+#             --fasta {input.fasta} \
+#             --metadata {input.metadata} \
+#             --output {output}
+#         """
+# 
+# rule labels_preprocessing:
+#     input:
+#         f"{RESULTS_DIR}/raw_labels.tsv"
+#     output:
+#         f"{RESULTS_DIR}/cleaned_labels.tsv"
+#     shell:
+#         """
+#         python scripts/labels_preprocessing.py \
+#             --raw_labels {input} \
+#             --output_dir {RESULTS_DIR}
+#         """
+
+rule labels_postprocessing:
+    input:
+        labels=config["labels"],  # TODO uncomment preprocessing
+        cbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
+        noncbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+    output:
+        f"{RESULTS_DIR}/final_metadata.tsv"
+    shell:
+        """
+        python scripts/labels_postprocessing.py \
+            --clean_labels {input.labels} \
+            --output_dir {RESULTS_DIR}
+        """
+
+rule train_model:
     input:
         embeddings=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=config["labels"]
+        labels=f"{RESULTS_DIR}/final_metadata.tsv"
     output:
-        protected(f"{RESULTS_DIR}/contrastive_model.pth")
+        protected(f"{RESULTS_DIR}/transformer_model.pth")
     params:
         device=config["device"],
         epochs=config["epochs"],
@@ -152,7 +126,7 @@ rule train_contrastive_transformer:
         lr=config["lr"]
     shell:
         """
-        python scripts/train_contrastive_transformer.py \
+        python scripts/train_lr_transformer.py \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -165,69 +139,34 @@ rule train_contrastive_transformer:
             --hierarchical_loss
         """
 
-################################################################################
-# Use the trained contrastive head to transform embeddings
-################################################################################
-rule embed_contrastive:
-    input:
-        embeddings=f"{RESULTS_DIR}/base_embeddings.npy",
-        head=f"{RESULTS_DIR}/contrastive_head.pth"
-    output:
-        f"{RESULTS_DIR}/contrastive_embeddings.npy"
-    params:
-        device=config["device"]
-    shell:
-        """
-        python scripts/infer_contrastive.py \
-            --embeddings {input.embeddings} \
-            --head {input.head} \
-            --output {output} \
-            --device {params.device}
-        """
-
-rule embed_contrastive_chunked:
+rule embed_chunks:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=config["labels"],
-        model=f"{RESULTS_DIR}/contrastive_model.pth"
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        model=f"{RESULTS_DIR}/transformer_model.pth"
     output:
-        f"{RESULTS_DIR}/contrastive_embeddings.npz"
+        f"{RESULTS_DIR}/inference_results.npz"
     params:
         device=config["device"],
         batch_size=config["batch_size"],
         model_params=config["model_params"]
     shell:
         """
-        python scripts/infer_contrastive_transformer.py \
+        python scripts/infer_lr_transformer.py \
             --embeddings_dir {input.embeddings} \
             --labels {input.labels} \
             --model {input.model} \
             --output {output} \
             --device {params.device} \
             --batch_size {params.batch_size} \
-            --model_params '{params.model_params}'
-        """
-
-rule knn_inference:
-    input:
-        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        labels=config["labels"]
-    output:
-        report=f"{RESULTS_DIR}/knn_report.txt",
-        confusion_matrix=f"{RESULTS_DIR}/confusion_matrix_df.csv"
-    shell:
-        """
-        python scripts/knn_inference.py \
-            --embeddings {input.embeddings} \
-            --labels {input.labels} \
-            --knn_k {config[knn_k]} \
-            --output_dir {RESULTS_DIR}
+            --model_params '{params.model_params}' \
+            --labeled_only
         """
 
 rule visualize_embeddings:
     input:
-        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        labels=config["labels"]
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
     output:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
@@ -236,123 +175,76 @@ rule visualize_embeddings:
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
-            --method tsne \
-            --title "Contrastive Embeddings UMAP"
+            --method tsne
         """
 
-rule lda_analysis:
+rule capsule_classification:
     input:
-        embeddings=f"{RESULTS_DIR}/kmer_sketch.npz",
-        labels=config["labels"]
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        model=f"{RESULTS_DIR}/transformer_model.pth",
     output:
-        report=f"{RESULTS_DIR}/lda_rf_report.txt",
-        confusion_matrix=f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv"
+        f"{RESULTS_DIR}/cbl_results.txt",
     params:
-        n_components=config["lda_components"]
-    threads: 8
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_params=config["model_params"]
     shell:
         """
-        python scripts/baseline_analysis.py \
+        python scripts/cbl_classifier.py \
             --embeddings {input.embeddings} \
-            --labels {input.labels} \
-            --n_components {params.n_components} \
-            --test_size 0.2 \
-            --output-dir {RESULTS_DIR}
+            --model {input.model} \
+            --output {output} \
+            --device {params.device} \
+            --batch_size {params.batch_size} \
+            --model_params '{params.model_params}'
         """
 
-rule stats_summary:
-    """
-    Generate a lineplot of class-wise F1 distributions for
-    each confusion matrix to compare analysis methods.
-    """
+rule serotype_classification:
     input:
-        cm_files=[
-            f"{RESULTS_DIR}/lda_rf_confusion_matrix_df.csv",
-            f"{RESULTS_DIR}/confusion_matrix_df.csv"
-        ]
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        model=f"{RESULTS_DIR}/transformer_model.pth",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+    output:
+        f"{RESULTS_DIR}/serotype_predictions.txt",
+        f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
+        f"{RESULTS_DIR}/classification_report.txt",
+        f"{RESULTS_DIR}/confusion_matrix_df.csv"
     params:
-        legend_labels=["LDA", "Contrastive"],
-    output:
-        f"{RESULTS_DIR}/f1_distributions.pdf"
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_params=config["model_params"]
     shell:
         """
-        python scripts/statistical_summary.py \
-            --confusion_matrices {input.cm_files} \
-            --legend {params.legend_labels} \
-            --output {output}
-        """
-
-rule calc_distances:
-    input:
-        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        labels=config["labels"]
-    output:
-        f"{RESULTS_DIR}/distances.npz"
-    shell:
-        """
-        python scripts/calc_distances.py \
+        python scripts/serotype_classifier.py \
             --embeddings {input.embeddings} \
+            --model {input.model} \
             --labels {input.labels} \
-            --output {output}
+            --output_dir {RESULTS_DIR} \
+            --device {params.device} \
+            --batch_size {params.batch_size} \
+            --model_params '{params.model_params}'
         """
 
 rule novel_detection:
     input:
-        query=config["query_path"],
-        embeddings=f"{RESULTS_DIR}/contrastive_embeddings.npy",
-        labels=config["labels"],
-        distances=f"{RESULTS_DIR}/distances.npz"
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        trained_model=f"{RESULTS_DIR}/transformer_model.pth",
     params:
-        thresholds=config["novelty_thresholds"]
+        query=config["query_path"],
+        model_params=config["model_params"],
+        base_model=config["base_model"],
+        head_model="transformer_lr_classifier",  # Hardcoded for now
+        # thresholds=config["novelty_thresholds"],
     output:
-        f"{RESULTS_DIR}/novel_detection_report.txt",
-        f"{RESULTS_DIR}/distributions_params.json",
+        f"{RESULTS_DIR}/query_results.csv",
     shell:
         """
-        python scripts/novel_detection.py \
+        python scripts/novel_detection_lr.py \
             --query {params.query} \
-            --embeddings {input.embeddings} \
             --labels {input.labels} \
-            --distances {input.distances} \
-            --thresholds {params.thresholds} \
-            --output-dir {RESULTS_DIR}
+            --output_dir {RESULTS_DIR} \
+            --base_model {params.base_model} \
+            --head_model {params.head_model} \
+            --model_params '{params.model_params}' \
         """
-
-rule generate_raw_labels:
-    input:
-        fasta=config["fasta"],
-        metadata=config["metadata"]
-    output:
-        f"{RESULTS_DIR}/raw_labels.tsv"
-    shell:
-        """
-        python scripts/generate_raw_labels.py \
-            --fasta {input.fasta} \
-            --metadata {input.metadata} \
-            --output {output}
-        """
-
-rule labels_preprocessing:
-    input:
-        f"{RESULTS_DIR}/raw_labels.tsv"
-    output:
-        f"{RESULTS_DIR}/cleaned_labels.tsv"
-    shell:
-        """
-        python scripts/labels_preprocessing.py \
-            --raw_labels {input} \
-            --output_dir {RESULTS_DIR}
-        """
-
-rule labels_postprocessing:
-    input:
-        labels=f"{RESULTS_DIR}/cleaned_labels.tsv",
-        chunks_dir=directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
-    output:
-        f"{RESULTS_DIR}/final_labels.tsv"
-    shell:
-        """
-        python scripts/labels_postprocessing.py \
-            --clean_labels {input} \
-            --output_dir {RESULTS_DIR}
-        """
+            # --thresholds {params.thresholds} \
