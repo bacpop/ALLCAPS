@@ -16,19 +16,28 @@ def main():
     parser = argparse.ArgumentParser(
         description="Incorporate cleaned serotype labels and contig IDs into final metadata",
     )
-
-    parser.add_argument(
-        "--clean_labels", required=True, help="Path to cleaned labels TSV file"
-    )
+    parser.add_argument("--clean_labels", required=True, help="Path to cleaned labels TSV file")
+    parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
     parser.add_argument("--output_dir", required=True, help="Path for output files")
 
     args = parser.parse_args()
+    try:
+        args.skip_labels = [label.strip() for label in args.skip_labels.split(",") if label.strip()]
+    except ValueError:
+        print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
+        args.skip_labels = []
 
     non_cbl_label = DEFAULT_NONCBL_LABEL
 
     labels = pd.read_csv(args.clean_labels, sep="\t")
     print(f"Loaded {len(labels)} cleaned label entries")
     print(f"Unique serotypes in cleaned labels: {labels.Serotype.nunique()}")
+    if args.skip_labels:
+        skip_indices = labels['Serotype'].isin(args.skip_labels)
+        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
+        labels = labels[~skip_indices]
+        print(f"Remaining entries after skipping: {len(labels)}")
+        print(f"Unique serotypes after skipping: {labels.Serotype.nunique()}")
 
     # Create output directory if it doesn't exist
     output_path = Path(args.output_dir)
@@ -39,17 +48,18 @@ def main():
     for is_capsule, subdir in zip(
         [1, 0], ["base_embeddings_chunked/cbl", "base_embeddings_chunked/non-cbl"]
     ):
-        names = [f.split(".")[0] for f in os.listdir(output_path / subdir)]
-        names = [name for name in names if name.endswith(".npy")]
+        names = [f.split(".")[0] for f in os.listdir(output_path / subdir) if f.endswith(".npy")]
         public_ids, contig_ids = zip(*[name.split(CONTIG_SEP) for name in names])
         if is_capsule:
-            serotypes = (
-                pd.DataFrame(public_ids, columns=["Public_name"])
-                .merge(
-                    labels[["Public_name", "Serotype"]].drop_duplicates(), how="left"
-                )["Serotype"]
-                .values
-            )
+            serotypes_df = pd.DataFrame({"Public_name": public_ids, "Contig_ID": contig_ids}) \
+                .merge(labels[["Public_name", "Serotype"]].drop_duplicates(), on="Public_name", how="left")
+            if args.skip_labels:
+                print(f"Entries with skipped labels in capsule data: {serotypes_df.Serotype.isin(args.skip_labels).sum()}")
+                serotypes_df = serotypes_df.dropna(subset=["Serotype"])
+                public_ids = serotypes_df.Public_name.values
+                contig_ids = serotypes_df.Contig_ID.values
+            serotypes = serotypes_df.Serotype.values
+            assert serotypes_df.Serotype.isnull().sum() == 0, "Some capsule entries are missing serotype labels"
         else:
             serotypes = [non_cbl_label] * len(public_ids)
         results = pd.concat(
