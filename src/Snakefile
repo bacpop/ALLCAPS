@@ -12,6 +12,9 @@ def validate_model_params(config):
 # Validate configuration on load
 validate_model_params(config)
 
+# List of serotypes to iterate over for LOO (must be provided in config.yaml)
+SEROTYPES = config["serotypes"]
+
 rule all:
     input:
         # Embedding directories
@@ -29,7 +32,12 @@ rule all:
         f"{RESULTS_DIR}/classification_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
         # Novel detection outputs
-        f"{RESULTS_DIR}/query_results.csv"
+        f"{RESULTS_DIR}/query_results.csv",
+        # LOO targets (one set per held-out serotype)
+        expand(f"{RESULTS_DIR}/loo/{{heldout}}/classification_report.txt", heldout=SEROTYPES),
+        expand(f"{RESULTS_DIR}/loo/{{heldout}}/confusion_matrix_df.csv", heldout=SEROTYPES),
+        expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt", heldout=SEROTYPES),
+        expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv", heldout=SEROTYPES)
 
 rule infer_chunks_cbl:
     input:
@@ -224,6 +232,97 @@ rule serotype_classification:
             --batch_size {params.batch_size} \
             --model_params '{params.model_params}'
         """
+
+# Leave-one-out (LOO) workflow
+rule train_model_loo:
+    input:
+        embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+    output:
+        f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
+    params:
+        device=config["device"],
+        epochs=config["epochs"],
+        batch_size=config["batch_size"],
+        lr=config["lr"],
+        model_params=config["model_params"]
+    threads: 4
+    # resources: gpu=1, mem_mb=32000  # optionally control resources
+    shell:
+        """
+        python scripts/train_lr_transformer.py \
+            --embedding_dir {input.embeddings_dir} \
+            --labels {input.labels} \
+            --output {output} \
+            --device {params.device} \
+            --epochs {params.epochs} \
+            --batch_size {params.batch_size} \
+            --lr {params.lr} \
+            --model_params '{params.model_params}' \
+            --labeled_only \
+            --hierarchical_loss \
+            --skip_label {wildcards.heldout}
+        """
+
+rule embed_chunks_loo:
+    input:
+        embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
+    output:
+        f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz"
+    params:
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_params=config["model_params"]
+    threads: 2
+    # resources: gpu=1, mem_mb=16000
+    shell:
+        """
+        python scripts/infer_lr_transformer.py \
+            --embeddings_dir {input.embeddings_dir} \
+            --labels {input.labels} \
+            --model {input.model} \
+            --output {output} \
+            --device {params.device} \
+            --batch_size {params.batch_size} \
+            --model_params '{params.model_params}' \
+            --labeled_only \
+            --skip_label {wildcards.heldout}
+        """
+
+rule serotype_classification_loo:
+    input:
+        embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
+        model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+    output:
+        f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt",
+        f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv",
+        f"{RESULTS_DIR}/loo/{{heldout}}/classification_report.txt",
+        f"{RESULTS_DIR}/loo/{{heldout}}/confusion_matrix_df.csv"
+    params:
+        device=config["device"],
+        batch_size=config["batch_size"],
+        model_params=config["model_params"]
+    threads: 2
+    # resources: gpu=1, mem_mb=8000
+    shell:
+        """
+        python scripts/serotype_classifier.py \
+            --embeddings {input.embeddings} \
+            --model {input.model} \
+            --labels {input.labels} \
+            --output_dir {RESULTS_DIR}/loo/{wildcards.heldout} \
+            --device {params.device} \
+            --batch_size {params.batch_size} \
+            --model_params '{params.model_params}' \
+            --skip_label {wildcards.heldout}
+        """
+
+rule sequence_sampler:
+    """Placeholder for future implementation. It will extract all the sequences from the query fasta from a specific serotype to use as query in novel detection script"""
+    pass
 
 rule novel_detection:
     input:
