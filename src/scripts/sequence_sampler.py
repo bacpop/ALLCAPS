@@ -160,12 +160,14 @@ def main(args):
     # Save sampled sequences
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
+
+    serogroups_str = "_".join(list(map(lambda s: s.replace("/", ""), args.serogroups)))
     if len(serogroups) > 1 and not args.sample_all:
         outpref = f"{args.output_dir}/sequences_weighted_{args.sample_size}_{RND_STATE}"
         if args.serogroups:
-            outpref += "_" + "_".join(args.serogroups)
+            outpref += "_" + serogroups_str
     else:
-        outpref = f"{args.output_dir}/sequences" + (f"_{RND_STATE}_" + "_".join(args.serogroups) if args.serogroups else "_all")
+        outpref = f"{args.output_dir}/sequences" + (f"_{RND_STATE}_" + serogroups_str if args.serogroups else "_all")
     
     if args.fetch_fasta:
         SeqIO.write(sampled_sequences, outpref + ".fasta", "fasta")
