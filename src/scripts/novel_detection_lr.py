@@ -56,7 +56,7 @@ def transformer_embedding(  # TODO batch this
     all_embeddings = []
     for seq in sequences:
         # Chunk the sequence
-        chunks = chunk_sequence(seq, chunk_size, stride)
+        chunks = chunk_sequence(seq[:45000], chunk_size, stride)
         if not chunks:
             # print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
             chunks = [seq]
