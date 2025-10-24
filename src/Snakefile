@@ -51,7 +51,7 @@ rule infer_chunks_cbl:
         stride_ratio=config["stride_ratio"]
     shell:
         """
-        python scripts/embed_chunked_transformer.py \
+        python scripts/embed_transformer.py \
             --fasta {input.fasta} \
             --out_dir {output} \
             --model_name {params.base_model} \
@@ -72,7 +72,7 @@ rule infer_chunks_noncbl:
         stride_ratio=config["stride_ratio"]
     shell:
         """
-        python scripts/embed_chunked_transformer.py \
+        python scripts/embed_transformer.py \
             --fasta {input.fasta} \
             --out_dir {output} \
             --model_name {params.base_model} \
@@ -89,7 +89,7 @@ rule infer_chunks_noncbl:
 #         f"{RESULTS_DIR}/raw_labels.tsv"
 #     shell:
 #         """
-#         python scripts/generate_raw_labels.py \
+#         python scripts/data_generate_raw_labels.py \
 #             --fasta {input.fasta} \
 #             --metadata {input.metadata} \
 #             --output {output}
@@ -102,7 +102,7 @@ rule infer_chunks_noncbl:
 #         f"{RESULTS_DIR}/cleaned_labels.tsv"
 #     shell:
 #         """
-#         python scripts/labels_preprocessing.py \
+#         python scripts/data_labels_preprocessing.py \
 #             --raw_labels {input} \
 #             --output_dir {RESULTS_DIR}
 #         """
@@ -116,7 +116,7 @@ rule labels_postprocessing:
         f"{RESULTS_DIR}/final_metadata.tsv"
     shell:
         """
-        python scripts/labels_postprocessing.py \
+        python scripts/data_labels_postprocessing.py \
             --clean_labels {input.labels} \
             --output_dir {RESULTS_DIR}
         """
@@ -134,7 +134,7 @@ rule train_model:
         lr=config["lr"]
     shell:
         """
-        python scripts/train_lr_transformer.py \
+        python scripts/train_transformer.py \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -160,7 +160,7 @@ rule embed_chunks:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/infer_lr_transformer.py \
+        python scripts/infer_transformer.py \
             --embeddings_dir {input.embeddings} \
             --labels {input.labels} \
             --model {input.model} \
@@ -179,7 +179,7 @@ rule visualize_embeddings:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
         """
-        python scripts/visualize_embeddings.py \
+        python scripts/eval_visualize_embeddings.py \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
@@ -198,7 +198,7 @@ rule capsule_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/cbl_classifier.py \
+        python scripts/eval_cbl_classifier.py \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --output {output} \
@@ -223,7 +223,7 @@ rule serotype_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/serotype_classifier.py \
+        python scripts/eval_serotype_classifier.py \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -250,7 +250,7 @@ rule train_model_loo:
     # resources: gpu=1, mem_mb=32000  # optionally control resources
     shell:
         """
-        python scripts/train_lr_transformer.py \
+        python scripts/train_transformer.py \
             --embedding_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --output {output} \
@@ -279,7 +279,7 @@ rule embed_chunks_loo:
     # resources: gpu=1, mem_mb=16000
     shell:
         """
-        python scripts/infer_lr_transformer.py \
+        python scripts/infer_transformer.py \
             --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
@@ -309,7 +309,7 @@ rule serotype_classification_loo:
     # resources: gpu=1, mem_mb=8000
     shell:
         """
-        python scripts/serotype_classifier.py \
+        python scripts/eval_serotype_classifier.py \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -338,7 +338,7 @@ rule novel_detection:
         f"{RESULTS_DIR}/query_results.csv",
     shell:
         """
-        python scripts/novel_detection_lr.py \
+        python scripts/novel_detection.py \
             --query {params.query} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
