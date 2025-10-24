@@ -10,7 +10,8 @@ from sklearn.metrics import classification_report, f1_score, accuracy_score, con
 from models import TransformerLRClassifier
 from consts import (
     DEFAULT_LABEL_COLUMN, DEFAULT_NONCBL_LABEL, DEFAULT_SEP,
-    DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP
+    DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP,
+    DEFAULT_ENERGY_TEMPERATURE
 )
 
 
@@ -63,6 +64,9 @@ def main(args):
     all_predictions = []
     all_probabilities = []
     all_cbl_predictions = []
+
+    energy_temperature = args.energy_temperature
+    all_serotype_energies = []
     
     with torch.no_grad():
         for i in tqdm(range(0, len(X_filtered), args.batch_size)):
@@ -85,6 +89,11 @@ def main(args):
             batch_predictions = [idx_to_serotype[idx] for idx in predicted_indices]
             all_predictions.extend(batch_predictions)
             all_probabilities.extend(serotype_probs)
+
+            # Serotype energy (for OOD): E = -T * logsumexp(logits/T)
+            if args.collect_energies:
+                energies = (-energy_temperature * torch.logsumexp(serotype_logits / energy_temperature, dim=-1)).cpu().numpy()
+                all_serotype_energies.append(energies)
     
     # Add predictions to dataframe
     labels_df['predicted_serotype'] = all_predictions
@@ -94,6 +103,36 @@ def main(args):
     all_probabilities = np.array(all_probabilities)
     for i, serotype in enumerate(sorted(serotype_to_idx.keys())):
         labels_df[f'prob_{serotype}'] = all_probabilities[:, serotype_to_idx[serotype]]
+    
+    # Dump energies if requested
+    if args.collect_energies and len(all_serotype_energies) > 0:
+        serotype_energies = np.concatenate(all_serotype_energies)
+        # Attach identifiers and minimal metadata
+        labels_df['sample_id'] = labels_df.index + CONTIG_SEP + labels_df['Contig_ID']
+        labels_df['energy_serotype'] = serotype_energies
+        # Persist CSV
+        energy_cols = ['sample_id', 'Serotype', 'predicted_serotype', 'Is_capsule', 'energy_serotype']
+        energies_path = f"{args.output_dir}/serotype_energies.csv"
+        labels_df.to_csv(energies_path, columns=energy_cols, index=False)
+        print(f"Serotype energies saved to: {energies_path}")
+        # Optional summary JSON
+        if args.save_energy_summary:
+            try:
+                caps_mask = labels_df['Is_capsule'].astype(bool)
+                caps_energies = labels_df.loc[caps_mask, 'energy_serotype'].values
+                percentiles = {p: float(np.percentile(caps_energies, p)) for p in [95, 99, 99.5] if len(caps_energies) > 0}
+                summary = {
+                    'temperature': energy_temperature,
+                    'count_total': int(len(labels_df)),
+                    'count_capsulated': int(caps_mask.sum()),
+                    'percentiles_serotype': percentiles,
+                }
+                energy_summary_path = f"{args.output_dir}/energy_summary.json"
+                with open(energy_summary_path, 'w') as f:
+                    json.dump(summary, f, indent=2)
+                print(f"Energy summary saved to: {energy_summary_path}")
+            except Exception as e:
+                print(f"Failed to save energy summary JSON: {e}")
     
     predictions_output = f"{args.output_dir}/serotype_predictions.txt"
     labels_df.to_csv(predictions_output, sep='\t', index=False)
@@ -170,7 +209,7 @@ def main(args):
             f.write(f"F1 Score (weighted): {f1_weighted:.4f}\n")
             f.write(f"F1 Score (macro): {f1_macro:.4f}\n\n")
             f.write("Classification Report:\n")
-            f.write(clf_report)
+            f.write(str(clf_report))
             
             if not confidence_df.empty:
                 f.write("\n\nPer-Serotype Confidence Statistics:\n")
@@ -207,6 +246,12 @@ if __name__ == "__main__":
                         help="Batch size for inference")
     parser.add_argument("--model_params", type=str, default="{}",
                         help="JSON string of model parameters")
+    parser.add_argument("--collect_energies", action="store_true",
+                        help="Optional flag to dump per-sample serotype energies for ID calibration")
+    parser.add_argument("--energy_temperature", type=float, default=DEFAULT_ENERGY_TEMPERATURE,
+                        help="Temperature T used in energy calculation")
+    parser.add_argument("--save_energy_summary", action="store_true",
+                        help="Optional flag to save percentile summary of serotype energies")
 
     args = parser.parse_args()
     
