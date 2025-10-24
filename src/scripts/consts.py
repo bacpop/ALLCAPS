@@ -46,6 +46,7 @@ DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
 
 # Novelty detection
 DEFAULT_MIN_SEROGROUP_SIZE = 40  # Minimum number of samples in a serogroup to be considered for novelty detection
+DEFAULT_ENERGY_TEMPERATURE = 1.0  # Temperature T used in energy calculation
 
 # Training contrastive transformer
 DEFAULT_LR = 2e-5
