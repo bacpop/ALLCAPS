@@ -1,294 +1,294 @@
 import argparse
 import os
 import json
+
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
 from Bio import SeqIO
 from typing import List, Tuple
-from scipy.stats import beta, norm
-from sklearn.metrics.pairwise import cosine_distances
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from models import TransformerContrastiveHead
+from models import ModelRegistry, TransformerLRClassifier
 from consts import (
     DEFAULT_MIN_SEROGROUP_SIZE, DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
-    DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN, DEFAULT_EMBEDDING_DIM,
-    DEFAULT_OUTPUT_DIM, DEFAULT_NHEAD, DEFAULT_NUM_LAYERS,
-    DEFAULT_SEP, DEFAULT_LABEL_COLUMN, DEFAULT_MISSING_LABEL,
+    DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN, DEFAULT_SEP,
+    DEFAULT_BATCH_SIZE, CONTIG_SEP
 )
+from utils import chunk_sequence, embed_chunks, load_data
+
 
 EPS = 1e-6
-THRESH_CPS = 0.9  # TODO clean up and document and verify and what the fuck
+THRESH_CPS = 0.5  # TODO clean up and document and verify and what the fuck
 THRESH_NONCPS = 0.1
 NORM_NONCBL_PPF = 0.95
 THRESH_BETA = 0.98
 
 
+def energy_score(logits, temperature=1.0) -> float:
+    energy = -temperature * torch.logsumexp(logits / temperature, dim=-1)  # TODO verify
+    return energy.item()
+
+
 def transformer_embedding(  # TODO batch this 
-    tokenizer,
-    nt_model,
-    contrastive_model: TransformerContrastiveHead,
+    tokenizer: AutoTokenizer,
+    base_model: AutoModelForMaskedLM,
+    logistic_model: TransformerLRClassifier,
     sequences: List[str],
     device: str = "cuda",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     stride_ratio: float = DEFAULT_STRIDE_RATIO,
     max_length: int = DEFAULT_MAX_LEN,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
     Given a list of sequences, chunk and embed them using a Nucleotide Transformer,
-    then feed through the trained TransformerContrastiveHead to get final embeddings.
+    then feed through the trained TransformerLRClassifier to get final embeddings.
     Returns: np.ndarray of shape (len(sequences), output_dim)
+    
+    This function replicates the training/inference pipeline exactly.
     """
-    max_length = tokenizer.model_max_length
-    chunk_size = min(chunk_size, max_length)
+    # Use tokenizer.model_max_length if available, otherwise fallback to provided max_length
+    tok_max_len = getattr(tokenizer, "model_max_length", max_length)
+    chunk_size = min(chunk_size, tok_max_len)
     stride = int(chunk_size * stride_ratio)
 
-    all_logits = []
+    all_cbl_logits, all_serotype_logits = [], []
     all_embeddings = []
     for seq in sequences:
         # Chunk the sequence
-        chunks = [seq[i:i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)]
+        chunks = chunk_sequence(seq[:45000], chunk_size, stride)
         if not chunks:
-            continue
+            # print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
+            chunks = [seq]
+        
+        # Get raw chunked embeddings from NT model
+        pooled = embed_chunks(chunks, tokenizer, base_model, device, tok_max_len)  # shape (L, D)    
 
-        # Embed each chunk
-        inputs = tokenizer(
-            chunks,
-            return_tensors="pt",
-            padding="max_length",
-            truncation=True,
-            max_length=max_length
-        )
-        inputs = {k: v.to(device) for k, v in inputs.items()}
+        # Feed through the full logistic transformer model (like training pipeline)
         with torch.no_grad():
-            outputs = nt_model(**inputs, output_hidden_states=True)
-            last_hidden = outputs.hidden_states[-1]  # (L, T, D)
-            pooled = last_hidden.mean(dim=1)         # (L, D)
+            inputs = pooled.unsqueeze(0).to(device)  # (1, L, D)
+            cbl_logits, serotype_logits, embedding = logistic_model(inputs)  # Full model forward pass
+            embedding = embedding.squeeze(0).cpu().numpy()  # (output_dim,) - final projected embedding
 
-        # Feed through contrastive model
-        with torch.no_grad():
-            logits, embedding = contrastive_model(pooled.unsqueeze(0))  # (1, L, D) -> (1, output_dim)
-            embedding = embedding.squeeze(0).cpu().numpy()  # (output_dim,)
-        all_logits.append(logits.cpu().numpy())
+        all_cbl_logits.append(cbl_logits.cpu().numpy())
+        all_serotype_logits.append(serotype_logits.cpu().numpy())
         all_embeddings.append(embedding)
 
-    return np.stack(all_logits), np.stack(all_embeddings)
+    return np.stack(all_cbl_logits), np.stack(all_serotype_logits), np.stack(all_embeddings)
+
+
+def head_model_inference(
+    model: TransformerLRClassifier,
+    X: np.ndarray,
+    batch_size: int = 32,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Run inference on the logistic regression head model.
+    X: np.ndarray of shape (N, D) where N is number of samples and D is embedding dimension.
+    Returns: Tuple of (cbl_logits, serotype_logits)
     
-
-def fit_distributions(labels: pd.DataFrame, distances: np.ndarray, min_serogroup_size: int) -> Tuple[dict, dict]:
+    Note: X should be the final projected embeddings (z) from the model, not raw embeddings.
     """
-    Fit normal and beta distributions for serogroups based on pairwise distances.
-    """
-    labels_cp = labels.reset_index().iloc[:, 1]  # Ensure labels are indexed from 0
-    serogroups = labels_cp.unique()
-    beta_params = {}
-    for serogroup in serogroups:
-        indices = labels_cp[labels_cp == serogroup].index
-        if len(indices) < min_serogroup_size:
-            print(f"Skipping serogroup {serogroup} with size {len(indices)} < {min_serogroup_size}.")
-            continue
-        sub_distances = distances[np.ix_(indices, indices)][np.triu_indices(len(indices), k=1)]
-        sub_distances = sub_distances[sub_distances > EPS]
-        a, b, loc, scale = beta.fit(sub_distances, floc=0, fscale=2)  # 2 because of cosine_distance
-        beta_params[serogroup] = {"a": a, "b": b}  # TODO Should I store "loc": loc, "scale": scale?
-
-    # Could either fit a normal or a GMM with 2 components
-    normal_params = norm.fit(distances.flatten())
-    normal_params = {
-        "mu": normal_params[0],
-        "sigma": normal_params[1]
-    }
-    return beta_params, normal_params
-
-
-def generate_verdict(results: pd.DataFrame, beta_params: dict, normal_params: dict, output_dir: str):
-    out_path = os.path.join(output_dir, "novel_detection_report.txt")
-    # TODO
-    for query in results["Query"].unique():
-        query_results = results[results["Query"] == query]
-        for _, row in query_results.iterrows():
-            serogroup = row["Serogroup"]
-            if serogroup != "All":
-                params = beta_params[serogroup]
-                threshold = beta.ppf(row["Threshold"], params["a"], params["b"])
-                if row["query_distance_mean"] < threshold:
-                    row["Novel"] = "Novel"
-                else:
-                    row["Novel"] = "Known"
-            else:
-                threshold = norm.ppf(row["Threshold"], loc=normal_params["mu"], scale=normal_params["sigma"])
-                if row["query_distance_mean"] < threshold:
-                    row["Novel"] = "Novel"
-                else:
-                    row["Novel"] = "Known"
-    with open(out_path, "w") as f:
-        f.write("Individual statistics:\n")
-        f.write("\nVerdict:\n")
-        results.to_csv(f, sep="\t", index=False)
-    # results.groupby("Serogroup")["Novel"].value_counts().unstack(fill_value=0)
+    device = next(model.parameters()).device
+    model.eval()
+    
+    all_cbl_logits = []
+    all_serotype_logits = []
+    
+    with torch.no_grad():
+        for i in tqdm(range(0, len(X), batch_size)):
+            batch = torch.tensor(X[i:i + batch_size], dtype=torch.float32, device=device)
+            # Apply the classifier layers directly to the embeddings (like in serotype_classifier.py)
+            cbl_logits = model.cbl_classifier(batch)
+            serotype_logits = model.serotype_classifier(batch)
+            
+            all_cbl_logits.append(cbl_logits.cpu().numpy())
+            all_serotype_logits.append(serotype_logits.cpu().numpy())
+    
+    return np.concatenate(all_cbl_logits), np.concatenate(all_serotype_logits)
 
 
 def main(args):
-    ### TODO introduce params
-    nt_model_name = DEFAULT_MODEL
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    sep = DEFAULT_SEP
-    chunk_size = DEFAULT_CHUNK_SIZE
-    stride_ratio = DEFAULT_STRIDE_RATIO
-    max_length = DEFAULT_MAX_LEN
-    embedding_dim = DEFAULT_EMBEDDING_DIM
-    output_dim = DEFAULT_OUTPUT_DIM
-    nhead = DEFAULT_NHEAD
-    num_layers = DEFAULT_NUM_LAYERS
-    label_column = DEFAULT_LABEL_COLUMN
-    missing_label = DEFAULT_MISSING_LABEL
-    min_count = DEFAULT_MIN_SEROGROUP_SIZE
+
+    chunk_size = args.model_params.get("chunk_size", DEFAULT_CHUNK_SIZE)
+    stride_ratio = args.model_params.get("stride_ratio", DEFAULT_STRIDE_RATIO)
+    max_length = args.model_params.get("max_length", DEFAULT_MAX_LEN)
+    batch_size = args.model_params.get("batch_size", DEFAULT_BATCH_SIZE)
     
+    # Set seeds for reproducibility
+    torch.manual_seed(42)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(42)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+    ###
+
     thresholds = list(map(float, map(str.strip, args.thresholds.split(","))))
     assert len(thresholds) == 4, "Four thresholds are required."
     assert all(0 < t < 1 for t in thresholds), "Thresholds must be between 0 and 1."
-    thresh_cps, thresh_noncps, norm_noncbl_ppf, thresh_beta = thresholds
-    ### 
-    print("Loading embeddings and labels...")
-    embeddings = np.load(args.embeddings)
-    labels = pd.read_csv(args.labels, index_col=0, sep="\t")
-    
-    labels[label_column] = labels[label_column].fillna(missing_label)
-    known_indices = labels[label_column] != missing_label
-    ### Not gonna drop I guess. Just skipping the beta fitting.
-    # underrep_labels = labels[label_column].value_counts()[labels[label_column].value_counts() < min_count].index
-    # if underrep_labels.any():
-    #     print(f"Dropping serotypes with less than {min_count} samples:", *underrep_labels.to_list())
-    #     known_indices &= ~labels[label_column].isin(underrep_labels)
-    labels = labels[known_indices]
-    
-    is_emb_npz = isinstance(embeddings, np.lib.npyio.NpzFile)
-    if is_emb_npz:
-        cbl_prefix = lambda k: f"cbl{sep}{k}"
-        embeddings = np.array([embeddings[cbl_prefix(key)] for key in labels.index])  #  if cbl_prefix(key) in embeddings ?
-        # TODO Option to show non-cbl too
-    assert embeddings.shape[0] == len(labels), "Number of embeddings does not match number of labels."
 
-    print("Loading the distance matrix...")
-    dist_data = np.load(args.distances)
-    dist_matrix = np.zeros((dist_data["size"], dist_data["size"]))
-    dist_matrix[np.triu_indices_from(dist_matrix, k=1)] = dist_data["distances"]
-    dist_matrix += dist_matrix.T
-    assert dist_matrix.shape[0] == labels.shape[0], "Distance matrix size does not match number of labels."
+    print(f"Loading the {args.base_model} base model...")
+    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
+    base_model = AutoModelForMaskedLM.from_pretrained(args.base_model, trust_remote_code=True).to(device)
+    base_model.eval()  # Set to eval mode for deterministic behavior
+    
+    print("Loading the transformer and logistic regression model...")
+    model_path = os.path.join(args.output_dir, "transformer_model.pth")
+    model_save_dict = torch.load(model_path, map_location=device)
+    model_config = model_save_dict['model_config']
+    idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
+    
+    # Initialize model with saved configuration
+    logistic_model = ModelRegistry.get_model_class(args.head_model) \
+        .from_config(model_config) \
+        .to(device)
+    logistic_model.load_state_dict(model_save_dict['model_state_dict'])
+    logistic_model.eval()
 
-    print("Parsing thresholds and parameters...")
-    params_path = os.path.join(args.output_dir, args.distributions)
-    if os.path.exists(params_path):
-        print("\tLoading distribution parameters...")
-        params_data = json.load(open(params_path))
-        beta_params, normal_params = params_data["beta"], params_data["normal"]
+    # Prepare energy temperature and threshold (tau) for query mode
+    resolved_temperature = args.energy_temperature
+    from typing import Optional
+    tau_serotype: Optional[float] = None
+    if not args.embeddings:
+        # Query mode: determine tau from JSON or CSV
+        if args.energy_thresholds_json:
+            with open(args.energy_thresholds_json, 'r') as f:
+                thr = json.load(f)
+            # Prefer explicit tau_serotype, else pick percentile value
+            if 'temperature' in thr:
+                resolved_temperature = float(thr['temperature'])
+            if 'tau_serotype' in thr:
+                tau_serotype = float(thr['tau_serotype'])
+            elif 'percentiles_serotype' in thr:
+                perc_map = thr['percentiles_serotype']
+                key_candidates = [str(args.energy_percentile), str(int(args.energy_percentile))]
+                found = False
+                for k in key_candidates:
+                    if k in perc_map:
+                        tau_serotype = float(perc_map[k])
+                        found = True
+                        break
+                if not found:
+                    raise ValueError("Thresholds JSON missing matching percentile for energy.")
+            else:
+                raise ValueError("Thresholds JSON missing tau_serotype or percentiles_serotype.")
+            print(f"Loaded tau_serotype={tau_serotype:.6f} at T={resolved_temperature} from {args.energy_thresholds_json}")
+        elif args.id_energies_csv:
+            df_e = pd.read_csv(args.id_energies_csv)
+            # Ensure numeric energies
+            if 'energy_serotype' not in df_e.columns:
+                raise ValueError("ID energies CSV must contain 'energy_serotype' column.")
+            energies = pd.to_numeric(df_e['energy_serotype'], errors='coerce').to_numpy(dtype=float)
+            energies = energies[~np.isnan(energies)]
+            if 'Is_capsule' in df_e.columns:
+                caps = df_e['Is_capsule'].astype(bool).to_numpy()
+                # Align mask length if any rows were NaN; fallback to not masking when lengths mismatch
+                if len(caps) == len(df_e):
+                    # Apply mask before NaN filtering: recompute mask indices
+                    valid_mask = ~pd.to_numeric(df_e['energy_serotype'], errors='coerce').isna().to_numpy()
+                    if valid_mask.sum() == len(energies):
+                        caps = caps[valid_mask]
+                        energies = energies[caps]
+            if energies.size == 0:
+                raise ValueError("No valid energy values found in ID energies CSV after filtering.")
+            tau_serotype = float(np.percentile(energies.astype(float), float(args.energy_percentile)))
+            print(f"Computed tau_serotype={tau_serotype:.6f} from ID energies (p={args.energy_percentile})")
+        else:
+            # Should not happen due to arg checks, but guard anyway
+            raise ValueError("In query mode, provide --id_energies_csv or --energy_thresholds_json.")
+
+    results = dict()
+    if args.embeddings:
+        print("Loading embeddings and labels...")
+        embeddings, labels = load_data(args.embeddings, args.labels, sep=DEFAULT_SEP)
+        print(f"Loaded embeddings shape: {embeddings.shape}")
+        print(f"Expected embedding dimension: {model_config['output_dim']}")
+
+        sample_size = 10000
+        print(f"Sampling {sample_size} embeddings from {len(embeddings)} total.")
+        indices = np.random.choice(len(embeddings), sample_size, replace=False)
+        embeddings, labels = embeddings[indices], labels.iloc[indices]
+        labels['sample_id'] = labels.index + CONTIG_SEP + labels['Contig_ID']
+        print("Running inference on embeddings...") 
+        # Note: embeddings are expected to be final projected embeddings (z) from the model
+        cbl_logits, serotype_logits = head_model_inference(logistic_model, embeddings, batch_size=batch_size)
+        for sample in tqdm(range(len(embeddings))):
+            sample_id = labels.iloc[sample]['sample_id']
+            results[sample_id] = {
+                "ground_truth": labels.iloc[sample]['Serotype'],
+                "cbl_logits": cbl_logits[sample],
+                "serotype_logits": serotype_logits[sample],
+                "embedding": embeddings[sample],
+                "is_cbl": torch.sigmoid(torch.tensor(cbl_logits[sample]))[1].item() > thresholds[0],  # CBL probability
+            }
+
     else:
-        print("\tParameters not found. Fitting beta distributions...")
-        beta_params, normal_params = fit_distributions(labels[[label_column]], dist_matrix, min_count)
-        print("\tSaving distribution parameters...")
-        json.dump(
-            {
-                "beta": beta_params,
-                "normal": normal_params
-            },
-            open(params_path, "w"),
-        )
-
-    print("Loading the transformer model and contrastive head...")
-    tokenizer = AutoTokenizer.from_pretrained(nt_model_name)
-    nt_model = AutoModelForMaskedLM.from_pretrained(nt_model_name).to(device)
-    
-    contrastive_model = TransformerContrastiveHead(
-        input_dim=embedding_dim,
-        output_dim=output_dim,
-        nhead=nhead,
-        num_layers=num_layers
-    ).to(device)
-    model_path = os.path.join(args.output_dir, "contrastive_model.pth")
-    contrastive_model.load_state_dict(torch.load(model_path, map_location=device))
-    contrastive_model.eval()
-
-    results = []
-    print("Processing queries...")
-    total = sum(1 for _ in SeqIO.parse(args.query, "fasta"))
-    for record in tqdm(SeqIO.parse(args.query, "fasta"), total=total):
-        print(f"Processing query: {record.id}...")
-        print("\t- Embedding the query sequence...")
-        query_logits, query_embedding = transformer_embedding(
-            tokenizer=tokenizer,
-            nt_model=nt_model,
-            contrastive_model=contrastive_model,
-            sequences=[str(record.seq)],
-            device=device,
-            chunk_size=chunk_size,
-            stride_ratio=stride_ratio,
-            max_length=max_length,
-        )
-        query_logits = torch.sigmoid(torch.tensor(query_logits)).numpy().flatten()
-        print(f"Classification logits for {record.id}: non-cbl, cbl = {query_logits}")
-        argmax_idx = np.argmax(query_logits)
-        if query_logits[argmax_idx] < thresh_cps:
-            print(f"The model is not confident about Query {record.id} being a CPS. Confidence: {query_logits[argmax_idx]:.4f}.")
-        if query_logits[0] > thresh_cps:
-            print(f"Query {record.id} is classified as non-CBL with confidence {query_logits[0]:.4f}.")
-            results.append({
-                "Query": record.id,
-                "Description": record.description,
-                "Prediction": "Non-CBL",
-                "Threshold": query_logits[0],
-                "PPF": None,  # No PPF for non-CBL
-                "query_distance_mean": None,  # Will be filled later
-                "query_distance_std": None,  # Will be filled later
-                "#Samples": None,  # TODO Will be filled later
-            })
-        elif query_logits[1] > thresh_noncps:
-            print(f"Query {record.id} is classified as CBL with confidence {query_logits[1]:.4f}.")
+        print("Processing queries...")
+        query_sequences = list(SeqIO.parse(args.query, "fasta"))
+        # Ensure tau is resolved for type checkers and runtime
+        assert tau_serotype is not None, "tau_serotype must be set in query mode"
+        for record in tqdm(query_sequences, desc="Processing queries"):
+            print(f"Processing query: {record.id}...")
+            query_cbl_logits, query_serotype_logits, query_embedding = transformer_embedding(
+                tokenizer=tokenizer,
+                base_model=base_model,
+                logistic_model=logistic_model,
+                sequences=[str(record.seq)],
+                device=device,
+                chunk_size=chunk_size,
+                stride_ratio=stride_ratio,
+                max_length=max_length,
+            )
             
-        query_distances = cosine_distances(query_embedding, embeddings).flatten()
+            # Extract results for this single sequence
+            query_cbl_logits = query_cbl_logits[0, 0]  # (1, 1, 2) -> (2,)
+            query_serotype_logits = query_serotype_logits[0, 0]  # (1, 1, num_classes) -> (num_classes,)
+            query_embedding = query_embedding[0]  # (1, output_dim) -> (output_dim,)
+            cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
+            is_cbl = bool(cbl_predictions[1] > thresholds[0])
+            # Serotype energy at configured temperature
+            e_sero = energy_score(query_serotype_logits, temperature=resolved_temperature)
+            is_novel = bool(is_cbl and (float(e_sero) > float(tau_serotype)))
+            results[record.id] = {
+                "cbl_logits": query_cbl_logits,
+                "serotype_logits": query_serotype_logits,
+                "embedding": query_embedding,
+                "is_cbl": is_cbl,
+                "energy_serotype": float(e_sero),
+                "is_novel_serogroup": is_novel,
+            }
+    
+    results_df = pd.DataFrame.from_dict(results, orient='index')
+    results_df["pred_argmax"] = results_df["serotype_logits"].apply(
+        lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
+    )
+    # If query mode, add tau and temperature for traceability
+    if not args.embeddings:
+        results_df["tau_serotype"] = tau_serotype
+        results_df["energy_temperature"] = resolved_temperature
 
-        # Evaluate against each serogroup
-        print("reached beta params")
-        for serogroup, params in beta_params.items():
-            ppf_threshold = beta.ppf(thresh_beta, params["a"], params["b"])
-            results.append({
-                "Query": record.id,
-                "Prediction": serogroup,
-                "Threshold": thresh_beta,
-                "PPF": ppf_threshold,
-                "query_distance_mean": query_distances[labels[label_column] == serogroup].mean(),
-                "query_distance_std": query_distances[labels[label_column] == serogroup].std(),
-                "#Samples": len(labels[labels[label_column] == serogroup]),
-            })
-        # Evaluate against everything
-        ppf_threshold = norm.ppf(norm_noncbl_ppf, loc=normal_params["mu"], scale=normal_params["sigma"])
-        results.append({
-            "Query": record.id,
-            "Prediction": "All",
-            "Threshold": norm_noncbl_ppf,
-            "PPF": ppf_threshold,
-            "query_distance_mean": query_distances.mean(),
-            "query_distance_std": query_distances.std(),
-            "#Samples": len(labels),
-        })
-
-    # Save results
-    results_df = pd.DataFrame(results)
-    results_df.to_csv(os.path.join(args.output_dir, "novel_detection_results.csv"), index=False)
-    print("Saving results...")
-    print(results_df)
-    # TODO ROC curve, AUC, etc.
-    # generate_verdict(results_df, beta_params, normal_params, args.output_dir)
+    if args.embeddings:
+        true_cbl = results_df["ground_truth"] != "NON-CBL"
+        correct_serotype = results_df["pred_argmax"] == results_df["ground_truth"]
+        correct_serotype = correct_serotype | ~true_cbl  # Ignore serotype accuracy for non-CBL samples
+        correct_cbl = results_df["is_cbl"] == true_cbl
+        true_pos = (correct_serotype & correct_cbl).mean()
+        print(f"Serotype accuracy: {correct_serotype.mean():.4f}")
+        print(f"CBL accuracy: {correct_cbl.mean():.4f}")
+        print(f"True positive rate: {true_pos:.4f}")
+    results_df \
+        .drop(columns=["embedding", "serotype_logits"]) \
+        .to_csv(os.path.join(args.output_dir, "query_results.csv"), index=False)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Novel detection script.")
-    parser.add_argument("--query", type=str, required=True, help="Path to the query FASTA file.")
-    parser.add_argument("--embeddings", type=str, required=True, help="Path to the embeddings file.")
-    parser.add_argument("--labels", type=str, required=True, help="Path to the labels file.")
-    parser.add_argument("--distances", type=str, required=True, help="Path to the distances file.")
     parser.add_argument("--output_dir", type=str, required=True, help="Directory to save the output files.")
+    parser.add_argument("--query", type=str, help="Path to the query FASTA file.")
+    parser.add_argument("--embeddings", type=str, help="Path to the embeddings file.")
+    parser.add_argument("--labels", type=str, help="Path to the labels file.")  # TODO should be a subset
     parser.add_argument("--distributions", type=str, default="distributions_params.json", help="Path to the distributions parameters file.")
     parser.add_argument("--min_serogroup_size", type=int, default=DEFAULT_MIN_SEROGROUP_SIZE,
         help="Minimum number of samples in a serogroup to be considered for novelty detection."
@@ -296,8 +296,46 @@ def parse_args():
     parser.add_argument("--thresholds", type=str, default=f"{THRESH_CPS},{THRESH_NONCPS},{NORM_NONCBL_PPF},{THRESH_BETA}",
         help="Comma-separated thresholds for novelty detection."  # TODO: explain the thresholds.
     )
+    parser.add_argument("--model_params", type=str, default="{}",
+                        help="JSON string of model parameters")
+    parser.add_argument("--base_model", type=str, default=DEFAULT_MODEL,
+                        help="Name of the base transformer model to use for initial inference.")
+    parser.add_argument("--head_model", type=str, default="transformer_lr_classifier",
+                        help="Name of the head model to use.")
+    # New args for energy-based OOD
+    parser.add_argument("--energy_temperature", type=float, default=1.0,
+                        help="Temperature T for energy computation")
+    parser.add_argument("--energy_percentile", type=float, default=99.0,
+                        help="Percentile (e.g., 99) over ID energies to set tau_serotype")
+    parser.add_argument("--id_energies_csv", type=str, default=None,
+                        help="CSV with ID serotype energies (columns should include energy_serotype)")
+    parser.add_argument("--energy_thresholds_json", type=str, default=None,
+                        help="JSON file containing precomputed tau_serotype and temperature")
+
+    args = parser.parse_args()
     
-    return parser.parse_args()
+    try:
+        args.model_params = json.loads(args.model_params)
+        if not isinstance(args.model_params, dict):
+            print("Model parameters should be a JSON object.")
+            args.model_params = {}
+    except json.JSONDecodeError:
+        print("Error parsing model parameters JSON string.")
+        args.model_params = {}
+    finally:
+        print("Model parameters:", args.model_params)
+
+    if not args.query and not args.embeddings:
+        parser.error("Either --query or --embeddings must be provided.")
+    if args.query and args.embeddings:
+        parser.error("Only one of --query or --embeddings can be provided.")
+    if args.embeddings and not args.labels:
+        parser.error("If --embeddings is provided, --labels must also be specified.")
+    # In query mode, require source for tau
+    if args.query and not (args.id_energies_csv or args.energy_thresholds_json):
+        parser.error("In query mode, provide --id_energies_csv or --energy_thresholds_json for OOD thresholding.")
+
+    return args
 
 if __name__ == "__main__":
     main(parse_args())

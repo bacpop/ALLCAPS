@@ -9,7 +9,7 @@ import umap
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
-from utils import map_serotype_to_group
+from utils import load_data, map_serotype_to_group
 from consts import (
     DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN,
     DEFAULT_DOWNSAMPLE_SIZE, DEFAULT_SEP
@@ -93,10 +93,9 @@ def parse_args():
     parser.add_argument('--method', type=str, choices=['umap', 'tsne', 'pca'], default='umap',
                         help='Dimensionality reduction method to use for visualization.')
     parser.add_argument('--params', type=str, default="{}", help='JSON string of parameters.')
-    parser.add_argument('--title', type=str, default="UMAP", help='Title of the plot.')
-    parser.add_argument('--showـuntypable', action='store_true', default=False, help='Include data with missing label in the plot.')
-    parser.add_argument('--downsample', action='store_true', default=False, help='Downsample the data for faster plotting.')
-    parser.add_argument('--serotypesـlist', type=str, default=None, help='Comma-separated list of serotypes to include in the plot.')
+    parser.add_argument('--show_noncbl', action='store_true', default=False, help='Include non capsule sequences in the plot.')
+    parser.add_argument('--downsample', type=int, default=None, help='Downsample the data for faster plotting.')
+    parser.add_argument('--serotypes_list', type=str, default=None, help='Comma-separated list of serotypes to include in the plot.')
     args = parser.parse_args()
 
     try:
@@ -121,20 +120,15 @@ def main(args):
     print(f"Starting visualization with method: {args.method}") 
     missing_label = args.params.get("missing_label", DEFAULT_MISSING_LABEL)
     label_column = args.params.get("label_column", DEFAULT_LABEL_COLUMN)
-    downsample_size = args.params.get("downsample_size", DEFAULT_DOWNSAMPLE_SIZE)
     sep = args.params.get("sep", DEFAULT_SEP)
     
     print("Loading the data...")
-    embeddings = np.load(args.embeddings)
-    labels = pd.read_csv(args.labels, sep="\t")
-    is_emb_npz = isinstance(embeddings, np.lib.npyio.NpzFile)
-    if not is_emb_npz:
-        assert embeddings.shape[0] == labels.shape[0], "Number of embeddings and labels do not match."
-
+    embeddings, labels = load_data(args.embeddings, args.labels, missing_label=missing_label, sep=sep)
     labels = labels \
         .rename({label_column: "Serotype"}, axis=1) \
         .fillna(missing_label)
-    indices_mask = np.ones(len(labels), dtype=bool) if args.show_untypable else labels["Serotype"] != missing_label
+
+    indices_mask = labels["Serotype"] != missing_label
     if args.serotypes_list:
         serotypes_list = set(args.serotypes_list)
         serotypes_indices = labels["Serotype"].isin(serotypes_list)
@@ -143,17 +137,15 @@ def main(args):
     
     if args.downsample:
         print("Downsampling the data for faster plotting...")
-        downsample_indices = np.random.choice(np.where(indices_mask)[0], size=downsample_size, replace=False)
+        downsample_indices = np.random.choice(np.where(indices_mask)[0], size=args.downsample, replace=False)
         indices_mask = np.zeros(len(labels), dtype=bool)
         indices_mask[downsample_indices] = True
 
-    print("Calculating UMAP...")
-    if is_emb_npz:
-        cbl_prefix = lambda k: f"cbl{sep}{k}"
-        X = np.array([embeddings[cbl_prefix(key)] for key in labels[indices_mask]["Public_name"]])
-        # TODO Option to show non-cbl too
-    else:
-        X = embeddings[indices_mask]
+    print("Calculating...")
+    if not args.show_noncbl:
+        print("Using only capsule locus embeddings (cbl).")
+        indices_mask &= labels["Is_capsule"]
+
     calc_fn = partial(
         calculate_umap if args.method.lower() == 'umap' else
         calculate_tsne if args.method.lower() == 'tsne' else
@@ -161,9 +153,9 @@ def main(args):
         labels=labels[indices_mask],
         output_prefix=args.output_dir
     )
-    _, embedding_df = calc_fn(X)
-    
-    print("Plotting UMAP...")
+    _, embedding_df = calc_fn(embeddings[indices_mask])
+
+    print("Plotting...")
     plot_projection(embedding_df, args.method.upper(), args.output_dir)
 
 

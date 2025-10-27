@@ -13,14 +13,14 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold
 
-from models import TransformerLRClassifier, ContrastiveChunkedDataset
+from models import TransformerContrastiveHead, ContrastiveChunkedDataset
 from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
 from consts import (
     RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
     DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
     DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
-    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM,
+    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM, CONTIG_SEP,
     DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL, DEFAULT_LABEL_COLUMN,
     DEFAULT_EARLY_STOPPING, DEFAULT_CONTRASTIVE_LOSS_RATIO
 )
@@ -67,103 +67,72 @@ def parse_args():
     return args
 
 
-def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, contrastive_loss_fn, alpha, temperature, serotype_to_idx):
+def train_one_epoch(model, loader, optimizer, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
     model.train()
-    total_loss, ce_loss, serotype_loss, contrastive_loss = 0.0, 0.0, 0.0, 0.0
+    total_loss, ce_loss, contrastive_loss = 0.0, 0.0, 0.0
     for batch in loader:
         capsule_label = batch['is_capsule'].cuda()
         serotype_label = batch['serotype']
         capsule_mask = (capsule_label == 1)
 
-        cbl_logits, serotype_logits, embeddings = model(batch['embedding'].cuda())
+        logits, embeddings = model(batch['embedding'].cuda())
 
-        # CBL classification loss
-        ce_loss_val = ce_loss_fn(cbl_logits, capsule_label)
+        ce_loss = ce_loss_fn(logits, capsule_label)
 
-        # Serotype classification loss (only for capsule samples)
-        serotype_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
-        if capsule_mask.sum() > 0:
-            # Convert serotype labels to indices for capsule samples
-            serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
-            serotype_loss_val = serotype_loss_fn(serotype_logits[capsule_mask], serotype_indices)
-
-        # Contrastive loss (only for capsule samples)
-        contrastive_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
         if capsule_mask.sum() > 1:
-            contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+            contrastive_loss = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+        else:
+            contrastive_loss = torch.tensor(0.0, device=ce_loss.device)
 
-        loss = ce_loss_val + serotype_loss_val + alpha * contrastive_loss_val
+        loss = ce_loss + alpha * contrastive_loss
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         total_loss += loss.item()
-        ce_loss += ce_loss_val.item()
-        serotype_loss += serotype_loss_val.item()
-        contrastive_loss += contrastive_loss_val.item()
+        ce_loss += ce_loss.item()
+        contrastive_loss += contrastive_loss.item()
 
     wandb.log({
         "epoch_loss": total_loss / len(loader),
         "epoch_ce_loss": ce_loss / len(loader),
-        "epoch_serotype_loss": serotype_loss / len(loader),
         "epoch_contrastive_loss": contrastive_loss / len(loader)
     })
     return total_loss / len(loader)
 
 
-def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, contrastive_loss_fn, alpha, temperature, serotype_to_idx):
+def evaluate(model, loader, ce_loss_fn, contrastive_loss_fn, alpha, temperature):
     model.eval()
     total_loss = 0.0
-    correct_cbl = 0
-    correct_serotype = 0
-    total_cbl = 0
-    total_serotype = 0
+    correct = 0
+    total = 0
     with torch.no_grad():
         for batch in loader:
             capsule_label = batch['is_capsule'].cuda()
             serotype_label = batch['serotype']
             capsule_mask = (capsule_label == 1)
 
-            cbl_logits, serotype_logits, embeddings = model(batch['embedding'].cuda())
-            
-            # CBL classification loss
-            ce_loss_val = ce_loss_fn(cbl_logits, capsule_label)
+            logits, embeddings = model(batch['embedding'].cuda())
+            ce_loss = ce_loss_fn(logits, capsule_label)
 
-            # Serotype classification loss (only for capsule samples)
-            serotype_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
-            if capsule_mask.sum() > 0:
-                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
-                serotype_loss_val = serotype_loss_fn(serotype_logits[capsule_mask], serotype_indices)
-
-            # Contrastive loss (only for capsule samples)
-            contrastive_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
             if capsule_mask.sum() > 1:
-                contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+                contrastive_loss = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+            else:
+                contrastive_loss = torch.tensor(0.0, device=ce_loss.device)
 
-            loss = ce_loss_val + serotype_loss_val + alpha * contrastive_loss_val
+            loss = ce_loss + alpha * contrastive_loss
             total_loss += loss.item()
 
-            # CBL accuracy
-            _, predicted_cbl = torch.max(cbl_logits, 1)
-            correct_cbl += (predicted_cbl == capsule_label).sum().item()
-            total_cbl += capsule_label.size(0)
+            _, predicted = torch.max(logits, 1)
+            correct += (predicted == capsule_label).sum().item()
+            total += capsule_label.size(0)
 
-            # Serotype accuracy (only for capsule samples)
-            if capsule_mask.sum() > 0:
-                _, predicted_serotype = torch.max(serotype_logits[capsule_mask], 1)
-                serotype_indices = torch.tensor([serotype_to_idx[serotype_label[i]] for i in range(len(capsule_label)) if capsule_mask[i]], device=ce_loss_val.device)
-                correct_serotype += (predicted_serotype == serotype_indices).sum().item()
-                total_serotype += serotype_indices.size(0)
-
-    cbl_accuracy = correct_cbl / total_cbl if total_cbl > 0 else 0.0
-    serotype_accuracy = correct_serotype / total_serotype if total_serotype > 0 else 0.0
-    
+    accuracy = correct / total if total > 0 else 0.0
     wandb.log({
         "test_loss": total_loss / len(loader),
-        "cbl_accuracy": cbl_accuracy,
-        "serotype_accuracy": serotype_accuracy,
+        "accuracy": accuracy,
     })
-    return total_loss / len(loader), cbl_accuracy, serotype_accuracy
+    return total_loss / len(loader), accuracy
 
 
 def main(args):
@@ -180,37 +149,7 @@ def main(args):
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
 
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
-    non_cbl_label = args.model_params.get("non_cbl_label", DEFAULT_NONCBL_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
-    
-    print("Loading data...")
-    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
-    labels['Serotype'] = labels[label_column].fillna(missing_label)
-
-    noncbl_subdir = os.path.join(args.embedding_dir, "non-cbl")
-    if os.path.exists(noncbl_subdir):
-        print("Found non-cbl embeddings, adding NON-CBL label and embeddings.")
-        non_cbl_embeddings = [f for f in os.listdir(noncbl_subdir) if f.endswith('.npy')]
-        non_cbl_embeddings = [f.replace('.npy', '') for f in non_cbl_embeddings]
-        
-        non_cbl_labels = pd.DataFrame({
-            'Serotype': [non_cbl_label] * len(non_cbl_embeddings),
-        }, index=non_cbl_embeddings)
-        labels = pd.concat([labels, non_cbl_labels], axis=0)
-
-    indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
-    if args.skip_labels:
-        skip_indices = labels['Serotype'].isin(args.skip_labels)
-        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
-        indices &= ~skip_indices
-
-    fine_labels = labels['Serotype'][indices].values.tolist()
-    
-    # Create serotype to index mapping for multi-class classification
-    unique_serotypes = sorted(list(set(fine_labels)))
-    serotype_to_idx = {serotype: idx for idx, serotype in enumerate(unique_serotypes)}
-    num_serotypes = len(unique_serotypes)
-    print(f"Found {num_serotypes} unique serotypes: {unique_serotypes}")
 
     wandb.config.update({
         "random_state": random_state,
@@ -225,9 +164,19 @@ def main(args):
         "lr": args.lr,
         "alpha": alpha,
         "output_dim": output_dim,
-        "num_serotypes": num_serotypes,
     })
     
+    print("Loading data...")
+    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels['Serotype'] = labels[label_column].fillna(missing_label)
+
+    indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
+    if args.skip_labels:
+        skip_indices = labels['Serotype'].isin(args.skip_labels)
+        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
+        indices &= ~skip_indices
+
+    fine_labels = labels['Serotype'][indices].values.tolist()
     if args.hierarchical_loss:
         print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
         coarse_labels = labels['Serotype'][indices].apply(map_serotype_to_group).tolist()
@@ -237,8 +186,8 @@ def main(args):
         labels_known = fine_labels
         loss_function = supervised_contrastive_loss
 
-    sample_ids = labels.index[indices].tolist()
-    is_capsule = (labels['Serotype'] != non_cbl_label).astype(int)[indices].tolist()
+    sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices]).tolist()
+    is_capsule = labels["Is_capsule"][indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X
@@ -252,9 +201,8 @@ def main(args):
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
         test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=collate_fn)
 
-        model = TransformerLRClassifier(
+        model = TransformerContrastiveHead(
             input_dim=embedding_dim,
-            num_classes=num_serotypes,
             output_dim=output_dim,
             nhead=nhead,
             num_layers=num_layers
@@ -262,15 +210,14 @@ def main(args):
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
         ce_loss_fn = nn.CrossEntropyLoss()
-        serotype_loss_fn = nn.CrossEntropyLoss()
 
         best_loss, patience_counter = float('inf'), 0
 
         for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold+1}"):
-            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, serotype_loss_fn, loss_function, alpha, temperature, serotype_to_idx)
+            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, loss_function, alpha, temperature)
 
-            test_loss, cbl_accuracy, serotype_accuracy = evaluate(model, test_loader, ce_loss_fn, serotype_loss_fn, loss_function, alpha, temperature, serotype_to_idx)
-            print(f"Fold {fold+1} - Epoch {epoch+1} - Test Loss: {test_loss:.4f}, CBL Accuracy: {cbl_accuracy:.4f}, Serotype Accuracy: {serotype_accuracy:.4f}")
+            test_loss, accuracy = evaluate(model, test_loader, ce_loss_fn, loss_function, alpha, temperature)
+            print(f"Fold {fold+1} - Epoch {epoch+1} - Test Loss: {test_loss:.4f}, Accuracy: {accuracy:.4f}")
 
             if test_loss < best_loss:
                 best_loss = test_loss
@@ -286,9 +233,8 @@ def main(args):
     all_ds = ContrastiveChunkedDataset(args.embedding_dir, sample_ids, labels_known, is_capsule)
     all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
-    model_final = TransformerLRClassifier(
+    model_final = TransformerContrastiveHead(
         input_dim=embedding_dim,
-        num_classes=num_serotypes,
         output_dim=output_dim,
         nhead=nhead,
         num_layers=num_layers
@@ -296,29 +242,15 @@ def main(args):
 
     optimizer = torch.optim.AdamW(model_final.parameters(), lr=args.lr)
     ce_loss_fn = nn.CrossEntropyLoss()
-    serotype_loss_fn = nn.CrossEntropyLoss()
     for epoch in tqdm(range(args.epochs), desc="Final Training"):
-        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, serotype_loss_fn, loss_function, alpha, temperature, serotype_to_idx)
+        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, loss_function, alpha, temperature)
     
     print("Evaluating final model on all data...")
-    final_loss, final_cbl_accuracy, final_serotype_accuracy = evaluate(model_final, all_loader, ce_loss_fn, serotype_loss_fn, loss_function, alpha, temperature, serotype_to_idx)
-    print(f"Final model - Loss: {final_loss:.4f}, CBL Accuracy: {final_cbl_accuracy:.4f}, Serotype Accuracy: {final_serotype_accuracy:.4f}")
+    final_loss, final_accuracy = evaluate(model_final, all_loader, ce_loss_fn, loss_function, alpha, temperature)
+    print(f"Final model - Loss: {final_loss:.4f}, Accuracy: {final_accuracy:.4f}")
 
-    # Save model and serotype mapping
-    model_save_dict = {
-        'model_state_dict': model_final.state_dict(),
-        'serotype_to_idx': serotype_to_idx,
-        'num_serotypes': num_serotypes,
-        'model_config': {
-            'input_dim': embedding_dim,
-            'num_classes': num_serotypes,
-            'output_dim': output_dim,
-            'nhead': nhead,
-            'num_layers': num_layers
-        }
-    }
-    torch.save(model_save_dict, args.output)
-    print(f"Saved final model and serotype mapping to {args.output}")
+    torch.save(model_final.state_dict(), args.output)
+    print(f"Saved final model to {args.output}")
 
 
 if __name__ == "__main__":

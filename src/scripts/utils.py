@@ -3,6 +3,11 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 
+import numpy as np
+from typing import Tuple
+import pandas as pd
+
+from consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL
 EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of
@@ -192,3 +197,39 @@ def collate_fn(batch):
         'is_capsule': is_capsule          # tensor [B]
     }
 
+def chunk_sequence(seq, chunk_size=512, stride=256):
+    return [seq[i:i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)]
+
+
+def embed_chunks(chunks, tokenizer, model, device, max_length):
+    # Ensure model is in eval mode for consistent embeddings
+    model.eval()
+    inputs = tokenizer(
+        chunks,
+        return_tensors="pt",
+        # padding="max_length",  # TODO
+        # truncation=True,  # TODO
+        # max_length=max_length  # TODO
+    )
+    inputs = {k: v.to(device) for k, v in inputs.items()}
+    with torch.no_grad():
+        outputs = model(**inputs, output_hidden_states=True)
+        last_hidden = outputs.hidden_states[-1]  # (B, T, D)
+        pooled = last_hidden.mean(dim=1)         # (B, D)
+    return pooled.cpu()
+
+
+def load_data(
+    embeddings_path: str, labels_path: str, sep: str = DEFAULT_SEP, missing_label: str = DEFAULT_MISSING_LABEL
+) -> Tuple[np.ndarray, pd.DataFrame]:
+    X = np.load(embeddings_path, allow_pickle=True)  # shape: (N, L, D)
+    labels_df = pd.read_csv(labels_path, sep="\t", index_col=0)
+    labels_df["Serotype"] = labels_df["Serotype"].fillna(missing_label)  # TODO should be empty already
+    labels_df = labels_df[labels_df["Serotype"] != missing_label]
+
+    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") \
+        + sep \
+        + (labels_df.index + CONTIG_SEP + labels_df["Contig_ID"])
+    X_filtered = np.stack([X[key] for key in keys])
+    print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
+    return X_filtered, labels_df

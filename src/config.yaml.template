@@ -1,15 +1,18 @@
 results_dir: "my_results"
-fasta: "data/sequences.fasta"
+cbl_fasta: "data/cbl_sequences.fasta"
+noncbl_fasta: "data/noncbl_sequences.fasta"
 labels: "data/labels.txt"
 flank: "data/dexB_aliA_ATCC700669.fasta"
 raw_files: "/data/fasta_paths.txt"
 query_path: "/data/input_sequence.fa"
+chunk_size: 4000
+stride_ratio: 0.5
 device: "cuda"
 batch_size: 128
 epochs: 10
 lr: 0.001
-model_name: "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
-model_params: '{"temperature": 0.07, "k_folds": 5, "weight_fine": 1, "weight_coarse": 0.4, "random_state": 42}'
+base_model: "neuralbioinfo/prokbert-mini-long"
+model_params: '{"temperature": 0.07, "k_folds": 5, "weight_fine": 1, "weight_coarse": 0.4, "random_state": 42, "embedding_dim": 384}'
 sketch_k: 31
 sketch_size: 10000
 knn_k: 5

@@ -2,9 +2,10 @@
 
 RND_STATE = 42
 
-# Data depedent constants
+# Data dependent constants
 DEFAULT_LABEL_COLUMN = "Serotype"
 DEFAULT_MISSING_LABEL = "Non-typeable"
+CONTIG_SEP = "#"
 
 # 2D visualization
 DEFAULT_DOWNSAMPLE_SIZE = 1000
@@ -15,7 +16,7 @@ DEFAULT_OUTPUT_DIM = 128
 DEFAULT_BATCH_SIZE = 32
 DEFAULT_NUM_LAYERS = 1
 DEFAULT_NHEAD = 4
-DEFAULT_EMBEDDING_DIM = 2560  # Nucleotide Transformer output TODO
+DEFAULT_EMBEDDING_DIM = 384  # 2560 for Nucleotide Transformer output TODO
 
 # Baseline analysis
 DEFAULT_TEST_SIZE = 0.2
@@ -27,7 +28,9 @@ DEFAULT_CV = 5  # Number of cross-validation folds
 DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
 DEFAULT_CHUNK_SIZE = 512
 DEFAULT_STRIDE_RATIO = 0.75  # 25% overlap
-DEFAULT_MAX_LEN = 20_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
+DEFAULT_MAX_LEN = (
+    20_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
+)
 
 # Inference and training
 DEFAULT_NONCBL_LABEL = "NON-CBL"
@@ -43,6 +46,7 @@ DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
 
 # Novelty detection
 DEFAULT_MIN_SEROGROUP_SIZE = 40  # Minimum number of samples in a serogroup to be considered for novelty detection
+DEFAULT_ENERGY_TEMPERATURE = 1.0  # Temperature T used in energy calculation
 
 # Training contrastive transformer
 DEFAULT_LR = 2e-5

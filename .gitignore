@@ -4,11 +4,15 @@
 
 ### Custom ###
 .DS_Store
+
 config.yaml
 results/
+data/
+wandb/
+
 .snakemake
 .idea
-wandb/
+.vscode
 
 ### PyCharm ###
 # Covers JetBrains IDEs: IntelliJ, RubyMine, PhpStorm, AppCode, PyCharm, CLion, Android Studio, WebStorm and Rider

@@ -32,7 +32,7 @@ def main(args):
     is_emb_npz = isinstance(X, np.lib.npyio.NpzFile)
     if is_emb_npz:
         cbl_prefix = lambda k: f"cbl{sep}{k}"
-        X = np.array([X[cbl_prefix(key)] for key in labels.index])
+        X = np.array([X[cbl_prefix(key)] for key in labels.index if cbl_prefix(key) in X.keys()])
     
     if os.path.exists(args.output):
         print(f"Output file {args.output} already exists.", end=" ")
