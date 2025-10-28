@@ -1,0 +1,12 @@
+numpy
+pandas
+tqdm
+biopython
+torch
+torchvision
+transformers
+scikit-learn
+matplotlib
+seaborn
+wandb
+accelerate
