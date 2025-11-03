@@ -29,7 +29,7 @@ DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
 DEFAULT_CHUNK_SIZE = 4000
 DEFAULT_STRIDE_RATIO = 0.5  # 50% overlap
 DEFAULT_MAX_LEN = (
-    45_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
+    30_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
 )
 
 # Inference and training

@@ -21,6 +21,7 @@ from utils import chunk_sequence, embed_chunks
 EPS = 1e-6
 THRESH_CPS = 0.5
 DEFAULT_ENERGY_PERCENTILE = 99.0
+DEFAULT_ROLLING_STEP = 2000
 
 ### Temporary hard-coded stats to skip JSON loading during testing
 percentiles_serotype = {
@@ -41,32 +42,50 @@ def transformer_embedding(  # TODO batch this
     tokenizer: AutoTokenizer,
     base_model: AutoModelForMaskedLM,
     logistic_model: TransformerLRClassifier,
-    sequences: List[str],
+    sequence: str,
     device: str = "cuda",
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     stride_ratio: float = DEFAULT_STRIDE_RATIO,
+    step: int = 1000,
     max_length: int = DEFAULT_MAX_LEN,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
     """
-    Given a list of sequences, chunk and embed them using a Nucleotide Transformer,
-    then feed through the trained TransformerLRClassifier to get final embeddings.
+    Given a list of sequences, chunk and embed them using a pretrained transformer,
+    then feed through the trained classifier to get final embeddings.
+    
+    Inputs:
+        tokenizer: Pretrained tokenizer for the base model
+        base_model: Pretrained base transformer model
+        logistic_model: Trained TransformerLRClassifier model
+        sequences: List of input sequences (strings)
+        device: Device to run computations on ("cuda" or "cpu")
+        chunk_size: Size of each chunk for embedding
+        stride_ratio: Ratio of chunk size to use as stride
+        step: Step size for sliding window. Do not mistake for stride.
+        max_length: Maximum length of sequences to process.
+                    Longer sequences are chopped into `max_length` proceeding with `step`.
+    
     Returns: np.ndarray of shape (len(sequences), output_dim)
     
-    This function replicates the training/inference pipeline exactly.
     """
     # Use tokenizer.model_max_length if available, otherwise fallback to provided max_length
     model_max_length = getattr(tokenizer, "model_max_length", chunk_size)
     chunk_size = min(chunk_size, model_max_length)
     stride = int(chunk_size * stride_ratio)
 
-    all_cbl_logits, all_serotype_logits = [], []
-    all_embeddings = []
-    for seq in sequences:
+    all_cbl_logits, all_serotype_logits, all_embeddings = [], [], []
+    start_indices = [i for i in range(0, len(sequence), step) if i + max_length <= len(sequence)]
+    if not start_indices:
+        start_indices = [0]
+    
+    # Iterate over the sequence, embedding `max_length` sequences at a time, to get the most confidente prediction
+    for i in start_indices:
+        candidate = [sequence[i:i + max_length]]
+
         # Chunk the sequence
-        chunks = chunk_sequence(seq[:max_length], chunk_size, stride)
+        chunks = chunk_sequence(candidate, chunk_size, stride)
         if not chunks:
-            # print(f"Skipping sequence due to no valid chunks: {seq[:30]}...")
-            chunks = [seq]
+            chunks = [candidate]
         
         # Get raw chunked embeddings from pre-trained transformer
         pooled = embed_chunks(chunks, tokenizer, base_model, device, model_max_length)  # shape (L, D)
@@ -81,14 +100,17 @@ def transformer_embedding(  # TODO batch this
         all_serotype_logits.append(serotype_logits.cpu().numpy())
         all_embeddings.append(embedding)
 
-    return np.stack(all_cbl_logits), np.stack(all_serotype_logits), np.stack(all_embeddings)
+    return all_cbl_logits, all_serotype_logits, all_embeddings
 
 
 def main(args):
     device = args.device
     chunk_size = args.model_params.get("chunk_size", DEFAULT_CHUNK_SIZE)
     stride_ratio = args.model_params.get("stride_ratio", DEFAULT_STRIDE_RATIO)
+    
     max_length = args.model_params.get("max_length", DEFAULT_MAX_LEN)
+    rolling_step = args.model_params.get("rolling_step", DEFAULT_ROLLING_STEP)
+    
     cbl_threshold = THRESH_CPS
     
     # Set seeds for reproducibility
@@ -130,37 +152,70 @@ def main(args):
             tokenizer=tokenizer,
             base_model=base_model,
             logistic_model=logistic_model,
-            sequences=[str(record.seq)],
+            sequence=str(record.seq),
             device=device,
             chunk_size=chunk_size,
             stride_ratio=stride_ratio,
+            step=rolling_step,
             max_length=max_length,
         )
 
-        # Extract results for this single sequence
-        query_cbl_logits = query_cbl_logits[0, 0]  # (1, 1, 2) -> (2,)
-        query_serotype_logits = query_serotype_logits[0, 0]  # (1, 1, num_classes) -> (num_classes,)
-        query_embedding = query_embedding[0]  # (1, output_dim) -> (output_dim,)
-        cbl_predictions = torch.sigmoid(torch.tensor(query_cbl_logits)).numpy()
+        # Select among candidate windows: keep those with is_capsule=True and pick highest serotype confidence
+        best_idx = None
+        best_conf = -np.inf
+        # Compute per-candidate serotype confidence; filter to capsulated
+        for idx in range(len(query_serotype_logits)):
+            cbl_vec = np.asarray(query_cbl_logits[idx]).squeeze()
+            sero_vec = np.asarray(query_serotype_logits[idx]).squeeze()
+            # Capsule decision for this candidate (consistent with existing logic)
+            cbl_probs = torch.sigmoid(torch.tensor(cbl_vec)).numpy()
+            is_capsulated = bool(cbl_probs[1] > cbl_threshold)
+            if not is_capsulated:
+                continue
+            # Serotype confidence = max softmax probability
+            sero_conf = float(torch.softmax(torch.tensor(sero_vec), dim=-1).max().item())
+            if sero_conf > best_conf:
+                best_conf = sero_conf
+                best_idx = idx
+
+        # Fallback: if no capsulated candidates, use highest serotype confidence overall
+        if best_idx is None:
+            for idx in range(len(query_serotype_logits)):
+                sero_vec = np.asarray(query_serotype_logits[idx]).squeeze()
+                sero_conf = float(torch.softmax(torch.tensor(sero_vec), dim=-1).max().item())
+                if sero_conf > best_conf:
+                    best_conf = sero_conf
+                    best_idx = idx
+
+        # Extract results for the selected candidate
+        assert best_idx is not None, f"No candidate window selected in {record.id}"
+        sel_cbl_logits = np.asarray(query_cbl_logits[best_idx]).squeeze()
+        sel_serotype_logits = np.asarray(query_serotype_logits[best_idx]).squeeze()
+        sel_embedding = np.asarray(query_embedding[best_idx])
+        cbl_predictions = torch.sigmoid(torch.tensor(sel_cbl_logits)).numpy()
         is_cbl = bool(cbl_predictions[1] > cbl_threshold)
-        # Serotype energy at configured temperature
-        e_sero = energy_score(query_serotype_logits, temperature=resolved_temperature)
-        is_novel = bool(is_cbl and (float(e_sero) > float(tau_serotype)))
+
+        # Serotype energy at configured temperature (novelty score)
+        e_sero = energy_score(sel_serotype_logits, temperature=resolved_temperature)
+        is_novel = bool(float(e_sero) > float(tau_serotype))  # TODO should this also depend on is_cbl?
+
+        # Confidence outputs
+        serotype_confidence = best_conf
+        novelty_confidence = float(e_sero)
+
         results[record.id] = {
-            # "cbl_logits": query_cbl_logits,
-            "serotype_logits": query_serotype_logits,
-            "embedding": query_embedding,
+            "serotype_logits": sel_serotype_logits,
+            "embedding": sel_embedding,
             "is_cbl": is_cbl,
             "is_novel_serogroup": is_novel,
-            # "energy_serotype": float(e_sero),
+            "serotype_confidence": serotype_confidence,
+            "novelty_confidence": novelty_confidence,
         }
     
     results_df = pd.DataFrame.from_dict(results, orient='index')
     results_df["pred_argmax"] = results_df["serotype_logits"].apply(
         lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
     )
-    # results_df["tau_serotype"] = tau_serotype
-    # results_df["energy_temperature"] = resolved_temperature
     results_df \
         .drop(columns=["embedding", "serotype_logits"]) \
         .to_csv(os.path.join(args.output_dir, "query_results.csv"))
