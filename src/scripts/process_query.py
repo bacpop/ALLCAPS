@@ -80,7 +80,7 @@ def transformer_embedding(  # TODO batch this
     
     # Iterate over the sequence, embedding `max_length` sequences at a time, to get the most confidente prediction
     for i in start_indices:
-        candidate = [sequence[i:i + max_length]]
+        candidate = sequence[i:i + max_length]
 
         # Chunk the sequence
         chunks = chunk_sequence(candidate, chunk_size, stride)
@@ -107,12 +107,18 @@ def main(args):
     device = args.device
     chunk_size = args.model_params.get("chunk_size", DEFAULT_CHUNK_SIZE)
     stride_ratio = args.model_params.get("stride_ratio", DEFAULT_STRIDE_RATIO)
-    
+
     max_length = args.model_params.get("max_length", DEFAULT_MAX_LEN)
     rolling_step = args.model_params.get("rolling_step", DEFAULT_ROLLING_STEP)
-    
+
     cbl_threshold = THRESH_CPS
-    
+
+    # Prepare energy temperature and threshold (tau)
+    resolved_temperature = float(args.energy_temperature)
+    tau_serotype: Optional[float] = percentiles_serotype.get(str(args.energy_percentile), None)
+    assert tau_serotype is not None, "tau_serotype must be set"
+    # print(f"Loaded tau_serotype={tau_serotype:.6f} at T={resolved_temperature} from {args.energy_thresholds_json}")
+
     # Set seeds for reproducibility
     torch.manual_seed(42)
     if torch.cuda.is_available():
@@ -136,12 +142,6 @@ def main(args):
         .to(device)
     logistic_model.load_state_dict(model_save_dict['model_state_dict'])
     logistic_model.eval()
-
-    # Prepare energy temperature and threshold (tau)
-    resolved_temperature = float(args.energy_temperature)
-    tau_serotype: Optional[float] = percentiles_serotype.get(str(args.energy_percentile), None)
-    assert tau_serotype is not None, "tau_serotype must be set"
-    print(f"Loaded tau_serotype={tau_serotype:.6f} at T={resolved_temperature} from {args.energy_thresholds_json}")
     
     print("Processing queries...")
     results = dict()
@@ -208,8 +208,8 @@ def main(args):
             "embedding": sel_embedding,
             "is_cbl": is_cbl,
             "is_novel_serogroup": is_novel,
-            "serotype_confidence": serotype_confidence,
-            "novelty_confidence": novelty_confidence,
+            "serotype_confidence": round(serotype_confidence, 3),
+            "novelty_confidence": round(novelty_confidence, 3),
         }
     
     results_df = pd.DataFrame.from_dict(results, orient='index')
@@ -241,8 +241,8 @@ def parse_args():
                         help="Temperature T for energy computation")
     parser.add_argument("--energy_percentile", type=float, default=DEFAULT_ENERGY_PERCENTILE,
                         help="Percentile (e.g., 99) over ID energies to set tau_serotype")
-    parser.add_argument("--energy_thresholds_json", type=str, required=True,
-                        help="JSON file containing precomputed tau_serotype and temperature")
+    # parser.add_argument("--energy_thresholds_json", type=str, required=True,
+    #                     help="JSON file containing precomputed tau_serotype and temperature")
     parser.add_argument("--query_mode", default="default", choices=["default", "fast"],
                         help="Query processing mode. Default is 'default' which uses full model inference. "
                              "Fast mode skips the alignment-based locus cutter. "
