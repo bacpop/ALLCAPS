@@ -60,6 +60,10 @@ def get_options():
     IO.add_argument('--outpref',
                     default="result_cut.fasta",
                     help='Output filename. Default = "result_cut.fasta"')
+    IO.add_argument('--max-extension',
+                    type=int,
+                    default=30000,
+                    help='Maximum number of bases to extend toward contig ends when only one flank hits. Default = 30000')
     IO.add_argument('--save-noncbl',
                     action='store_true',
                     help='Save non-CBL sequences to a separate file. Default = False')
@@ -115,7 +119,7 @@ def save_non_cbl(records, missing_files, list_len, out_path):
         SeqIO.write(records, o, "fasta")
 
 
-def process_file(file, seq_pair_dict, cutoff):
+def process_file(file, seq_pair_dict, cutoff, max_extension):
     cut_records = []
     partial_found = set()
     not_found = set()
@@ -168,14 +172,14 @@ def process_file(file, seq_pair_dict, cutoff):
                         
                         # if seq2_valid, means likely contig break
                         if seq2_valid:
-                            # positive strand, set locus_2 as end of contig
+                            # positive strand, extend towards contig end but keep total length <= max_extension
                             if strand == 1:
                                 locus_1 = best_map_pair[0][3]
-                                locus_2 = len(sequence) + 1
-                            # negative strand, set locus_1 as beginning of contig
+                                locus_2 = min(len(sequence), locus_1 + max_extension)
+                            # negative strand, extend towards contig start but keep total length <= max_extension
                             else:
-                                locus_1 = 0
                                 locus_2 = best_map_pair[0][4]
+                                locus_1 = max(0, locus_2 - max_extension)
                             detail = "1_extended"
                         else:
                             locus_1 = best_map_pair[0][3]
@@ -192,14 +196,14 @@ def process_file(file, seq_pair_dict, cutoff):
 
                         # if seq1_valid, means likely contig break
                         if seq1_valid:
-                            # positive strand, set locus_1 as start of contig
+                            # positive strand, extend towards contig start but keep total length <= max_extension
                             if strand == 1:
-                                locus_1 = 0
                                 locus_2 = best_map_pair[1][4]
-                            # negative strand, set locus_2 as end of contig
+                                locus_1 = max(0, locus_2 - max_extension)
+                            # negative strand, extend towards contig end but keep total length <= max_extension
                             else:
                                 locus_1 = best_map_pair[1][3]
-                                locus_2 = len(sequence) + 1
+                                locus_2 = min(len(sequence), locus_1 + max_extension)
                             detail = "2_extended"
                         else:
                             locus_1 = best_map_pair[1][3]
@@ -231,14 +235,14 @@ def process_file(file, seq_pair_dict, cutoff):
             
     return cut_records, partial_found, not_found, non_cbl_records
 
-def parallel_cut_loci(file_list, seq_pair_dict, cutoff):
+def parallel_cut_loci(file_list, seq_pair_dict, cutoff, max_extension):
     all_cut_records = []
     all_partial_found = set()
     all_not_found = set()
     all_non_cbl_records = []
 
     with ProcessPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(process_file, file, seq_pair_dict, cutoff)
+        futures = [executor.submit(process_file, file, seq_pair_dict, cutoff, max_extension)
                    for file in file_list]
         for future in tqdm(as_completed(futures), total=len(futures)):
             cut_records, partial_found, not_found, non_cbl_records = future.result()
@@ -281,7 +285,7 @@ def main():
     with open(infiles, "r") as f:
         file_list = [line.strip() for line in f.readlines()]
 
-    cut_records, partial_found, not_found, non_cbl_records = parallel_cut_loci(file_list, seq_pair_dict, cutoff)
+    cut_records, partial_found, not_found, non_cbl_records = parallel_cut_loci(file_list, seq_pair_dict, cutoff, options.max_extension)
 
     print(f"Writing cut loci...")
     SeqIO.write(cut_records, outpref + ".fasta", "fasta")
