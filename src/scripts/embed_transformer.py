@@ -39,14 +39,16 @@ def main():
     model = AutoModelForMaskedLM.from_pretrained(args.model_name, trust_remote_code=True).to(args.device)
     model.eval()  # Critical: Set to evaluation mode for deterministic embeddings
 
-    max_length = tokenizer.model_max_length
-    chunk_size = min(args.chunk_size, max_length)
+    # NOTE: Make sure any changes is synced with the query processing script
+    model_max_length = getattr(tokenizer, "model_max_length", args.chunk_size)
+    chunk_size = min(args.chunk_size, model_max_length)
     stride = int(chunk_size * args.stride_ratio)
-    print(f"Max length for {args.model_name} is {max_length}")
-    print(f"Chunk size: {args.chunk_size}, Stride: {stride}")
+    print(f"Max length for {args.model_name} is {model_max_length}")
+    print(f"Chunk size: {chunk_size}, Stride: {stride}")
 
     print(f"Loading sequences from {args.fasta}...")
     total = sum(1 for _ in SeqIO.parse(args.fasta, "fasta"))
+    
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
         sample_name = seq_id.split("__")[0]  # Public ID + Contig ID
@@ -54,14 +56,12 @@ def main():
         if os.path.exists(chunks_path):
             print(f"Skipping {sample_name} as it already exists.")
 
-        # TODO filter somewhere else in a resuable module
-        seq = str(record.seq)[:args.seq_max_len]  # TODO Is it ok to truncate here?
-        chunks = chunk_sequence(seq, args.chunk_size, stride)
+        chunks = chunk_sequence(str(record.seq)[:args.seq_max_len], chunk_size, stride)  # TODO This is terribly wrong. WIll fix for the new data (SPAdes).
         if len(chunks) == 0:
             print(f"Skipping {sample_name} due to no valid chunks.")
             continue
         try:
-            pooled = embed_chunks(chunks, tokenizer, model, args.device, max_length)  # shape (L, D)
+            pooled = embed_chunks(chunks, tokenizer, model, args.device, model_max_length)  # shape (L, D)
             np.save(chunks_path, pooled.numpy())  # tensor [L, D]
         except Exception as e:
             print(f"Error processing {sample_name}: {e}")

@@ -120,7 +120,7 @@ def main(args):
             try:
                 caps_mask = labels_df['Is_capsule'].astype(bool)
                 caps_energies = labels_df.loc[caps_mask, 'energy_serotype'].values
-                percentiles = {p: float(np.percentile(caps_energies, p)) for p in [95, 99, 99.5] if len(caps_energies) > 0}
+                percentiles = {p: float(np.percentile(caps_energies, p)) for p in [93.0, 95.0, 99.0, 99.5] if len(caps_energies) > 0}
                 summary = {
                     'temperature': energy_temperature,
                     'count_total': int(len(labels_df)),

@@ -25,8 +25,9 @@ DEFAULT_ROLLING_STEP = 2000
 
 ### Temporary hard-coded stats to skip JSON loading during testing
 percentiles_serotype = {
-    "95": -8.368741035461426,
-    "99": -6.334590911865234,
+    "93.0": -8.152,
+    "95.0": -8.368741035461426,
+    "99.0": -6.334590911865234,
     "99.5": -5.951267242431641
 }
 ###
@@ -197,19 +198,15 @@ def main(args):
 
         # Serotype energy at configured temperature (novelty score)
         e_sero = energy_score(sel_serotype_logits, temperature=resolved_temperature)
-        is_novel = bool(float(e_sero) > float(tau_serotype))  # TODO should this also depend on is_cbl?
-
-        # Confidence outputs
-        serotype_confidence = best_conf
-        novelty_confidence = float(e_sero)
+        is_novel = bool(e_sero > tau_serotype)  # TODO should this also depend on is_cbl?
 
         results[record.id] = {
             "serotype_logits": sel_serotype_logits,
             "embedding": sel_embedding,
             "is_cbl": is_cbl,
             "is_novel_serogroup": is_novel,
-            "serotype_confidence": round(serotype_confidence, 3),
-            "novelty_confidence": round(novelty_confidence, 3),
+            "serotype_confidence": round(best_conf, 3),
+            "novelty_confidence": round(e_sero, 3),
         }
     
     results_df = pd.DataFrame.from_dict(results, orient='index')
