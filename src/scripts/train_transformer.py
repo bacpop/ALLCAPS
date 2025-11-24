@@ -225,7 +225,7 @@ def main(args):
         labels_known = fine_labels
         loss_function = supervised_contrastive_loss
 
-    sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices]).tolist()
+    sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices].astype(str)).tolist()
     is_capsule = labels["Is_capsule"][indices].tolist()
 
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
