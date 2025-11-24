@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 from Bio import SeqIO
 
-from consts import RND_STATE, DEFAULT_LABEL_COLUMN
+from ..consts import RND_STATE, DEFAULT_LABEL_COLUMN
 
 ID_SEP = "__"
 
