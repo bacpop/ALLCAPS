@@ -219,6 +219,10 @@ def embed_chunks(chunks, tokenizer, model, device, max_length):
     return pooled.cpu()
 
 
+def get_sample_id(df: pd.DataFrame, sep = CONTIG_SEP) -> pd.Series:
+    return df.index + sep + df["Contig_ID"].astype(str)
+
+
 def load_data(
     embeddings_path: str, labels_path: str, sep: str = DEFAULT_SEP, missing_label: str = DEFAULT_MISSING_LABEL
 ) -> Tuple[np.ndarray, pd.DataFrame]:
@@ -227,9 +231,7 @@ def load_data(
     labels_df["Serotype"] = labels_df["Serotype"].fillna(missing_label)  # TODO should be empty already
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
-    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") \
-        + sep \
-        + (labels_df.index + CONTIG_SEP + labels_df["Contig_ID"])
+    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") + sep + get_sample_id(labels_df)
     X_filtered = np.stack([X[key] for key in keys])
     print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
     return X_filtered, labels_df

@@ -10,10 +10,10 @@ import torch
 from torch.utils.data import DataLoader
 
 from models import TransformerLRClassifier, ContrastiveChunkedDataset
-from utils import collate_fn
+from utils import collate_fn, get_sample_id
 
 from consts import (
-    CONTIG_SEP, DEFAULT_MISSING_LABEL, DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
+    DEFAULT_MISSING_LABEL, DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
 )
 
 
@@ -37,7 +37,7 @@ def main(args):
         known_indices = labels['Serotype'] != missing_label
         labels = labels[known_indices]
 
-    sample_ids = (labels.index + CONTIG_SEP + labels["Contig_ID"]).tolist()
+    sample_ids = get_sample_id(labels).tolist()
     serotype_labels = labels["Serotype"].tolist()
     capsule_labels = labels["Is_capsule"].tolist()
 

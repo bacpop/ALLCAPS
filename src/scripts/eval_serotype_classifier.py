@@ -13,6 +13,7 @@ from consts import (
     DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP,
     DEFAULT_ENERGY_TEMPERATURE
 )
+from utils import get_sample_id
 
 
 def main(args):
@@ -29,9 +30,7 @@ def main(args):
     labels_df['Serotype'] = labels_df[label_column].fillna(missing_label)  # TODO should be empty already
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
-    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") \
-        + sep \
-        + (labels_df.index + CONTIG_SEP + labels_df["Contig_ID"])
+    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") + sep + get_sample_id(labels_df)
     X_filtered = np.stack([X[key] for key in keys])
     print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
 
@@ -108,7 +107,7 @@ def main(args):
     if args.collect_energies and len(all_serotype_energies) > 0:
         serotype_energies = np.concatenate(all_serotype_energies)
         # Attach identifiers and minimal metadata
-        labels_df['sample_id'] = labels_df.index + CONTIG_SEP + labels_df['Contig_ID']
+        labels_df['sample_id'] = get_sample_id(labels_df)
         labels_df['energy_serotype'] = serotype_energies
         # Persist CSV
         energy_cols = ['sample_id', 'Serotype', 'predicted_serotype', 'Is_capsule', 'energy_serotype']
