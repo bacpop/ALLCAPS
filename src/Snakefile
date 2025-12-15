@@ -39,9 +39,34 @@ rule all:
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv", heldout=SEROTYPES)
 
+rule locus_cutting:
+    """It cuts the loci from the input fasta files before embedding."""
+    input:
+        infiles=config["infiles"],
+    params:
+        query=config["locus_cutter_query"],
+        outpref=f"{config["data_dir"]}/contigs",
+        cutoff=config.get("locus_cutter_cutoff", 0.7),
+        max_extension=config.get("locus_cutter_max_extension", 1e9)
+    output:
+        f"{params.outpref}_cleaned.fasta",
+        f"{params.outpref}_noncbl_cleaned.fasta"
+    shell:
+        """
+        python scripts/data_locus_cutter.py \
+            --infiles {input.infiles} \
+            --cutoff {params.cutoff} \
+            --query {params.query} \
+            --outpref {params.outpref} \
+            --max_extension {params.max_extension} \
+            --save-noncbl
+        python scripts/tmp_fasta_contig_cleaner.py {params.outpref}.fasta
+        python scripts/tmp_fasta_contig_cleaner.py {params.outpref}_noncbl.fasta
+        """
+
 rule infer_chunks_cbl:
     input:
-        fasta=config["cbl_fasta"]  # TODO bring back locus cutter
+        fasta=f"{config["data_dir"]}/contigs_cleaned.fasta"
     output:
         directory(f"{RESULTS_DIR}/base_embeddings_chunked/cbl")
     params:
@@ -62,7 +87,7 @@ rule infer_chunks_cbl:
 
 rule infer_chunks_noncbl:
     input:
-        fasta=config["noncbl_fasta"]  # TODO bring back locus cutter
+        fasta=f"{config["data_dir"]}/contigs_noncbl_cleaned.fasta"
     output:
         directory(f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl")
     params:
@@ -81,44 +106,35 @@ rule infer_chunks_noncbl:
             --device {params.device}
         """
 
-# rule generate_raw_labels:
-#     input:
-#         fasta=config["fasta"],
-#         metadata=config["metadata"]
-#     output:
-#         f"{RESULTS_DIR}/raw_labels.tsv"
-#     shell:
-#         """
-#         python scripts/data_generate_raw_labels.py \
-#             --fasta {input.fasta} \
-#             --metadata {input.metadata} \
-#             --output {output}
-#         """
-# 
-# rule labels_preprocessing:
-#     input:
-#         f"{RESULTS_DIR}/raw_labels.tsv"
-#     output:
-#         f"{RESULTS_DIR}/cleaned_labels.tsv"
-#     shell:
-#         """
-#         python scripts/data_labels_preprocessing.py \
-#             --raw_labels {input} \
-#             --output_dir {RESULTS_DIR}
-#         """
+rule labels_preprocessing:
+    input:
+        config["metadata"]
+    output:
+        f"{RESULTS_DIR}/cleaned_labels.csv"
+    shell:
+        """
+        python scripts/data_labels_preprocessing.py \
+            --metadata {input} \
+            --output_dir {RESULTS_DIR}
+        """
 
 rule labels_postprocessing:
     input:
-        labels=config["labels"],  # TODO uncomment preprocessing
+        labels=f"{RESULTS_DIR}/cleaned_labels.csv",
         cbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
         noncbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+    params:
+        skip_labels=",".join(config.get("skip_labels", [])),
+        label_column=config.get("label_column", "ERR")
     output:
         f"{RESULTS_DIR}/final_metadata.tsv"
     shell:
         """
         python scripts/data_labels_postprocessing.py \
             --clean_labels {input.labels} \
-            --output_dir {RESULTS_DIR}
+            --output_dir {RESULTS_DIR} \
+            --skip_labels {params.skip_labels} \
+            --label_column {params.label_column}
         """
 
 rule train_model:
