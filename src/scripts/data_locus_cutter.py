@@ -21,7 +21,9 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from consts import RND_STATE
 
+
 ID_SEP = "__"
+DEFAULT_MAX_EXTENSION = 30_000
 np.random.seed(RND_STATE)
 
 def extract_public_name(file_name):
@@ -62,7 +64,7 @@ def get_options():
                     help='Output filename. Default = "result_cut.fasta"')
     IO.add_argument('--max-extension',
                     type=int,
-                    default=30000,
+                    default=DEFAULT_MAX_EXTENSION,
                     help='Maximum number of bases to extend toward contig ends when only one flank hits. Default = 30000')
     IO.add_argument('--save-noncbl',
                     action='store_true',
@@ -235,6 +237,7 @@ def process_file(file, seq_pair_dict, cutoff, max_extension):
             
     return cut_records, partial_found, not_found, non_cbl_records
 
+
 def parallel_cut_loci(file_list, seq_pair_dict, cutoff, max_extension):
     all_cut_records = []
     all_partial_found = set()
@@ -288,6 +291,10 @@ def main():
     cut_records, partial_found, not_found, non_cbl_records = parallel_cut_loci(file_list, seq_pair_dict, cutoff, options.max_extension)
 
     print(f"Writing cut loci...")
+    out_dir = os.path.dirname(outpref)
+    if out_dir and not os.path.exists(out_dir):
+        os.makedirs(out_dir)
+
     SeqIO.write(cut_records, outpref + ".fasta", "fasta")
 
     print(f"Writing partial and not found files...")

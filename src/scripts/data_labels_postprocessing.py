@@ -19,6 +19,7 @@ def main():
     parser.add_argument("--clean_labels", required=True, help="Path to cleaned labels TSV file")
     parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
     parser.add_argument("--output_dir", required=True, help="Path for output files")
+    parser.add_argument("--label_column", type=str, default="ERR", help="Column name for sample IDs in labels file")
 
     args = parser.parse_args()
     try:
@@ -27,9 +28,10 @@ def main():
         print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
         args.skip_labels = []
 
+    label_column = args.label_column
     non_cbl_label = DEFAULT_NONCBL_LABEL
 
-    labels = pd.read_csv(args.clean_labels, sep="\t")
+    labels = pd.read_csv(args.clean_labels)
     print(f"Loaded {len(labels)} cleaned label entries")
     print(f"Unique serotypes in cleaned labels: {labels.Serotype.nunique()}")
     if args.skip_labels:
@@ -51,12 +53,12 @@ def main():
         names = [f.split(".")[0] for f in os.listdir(output_path / subdir) if f.endswith(".npy")]
         public_ids, contig_ids = zip(*[name.split(CONTIG_SEP) for name in names])
         if is_capsule:
-            serotypes_df = pd.DataFrame({"Public_name": public_ids, "Contig_ID": contig_ids}) \
-                .merge(labels[["Public_name", "Serotype"]].drop_duplicates(), on="Public_name", how="left")
+            serotypes_df = pd.DataFrame({label_column: public_ids, "Contig_ID": contig_ids}) \
+                .merge(labels[[label_column, "Serotype"]].drop_duplicates(), on=label_column, how="left")
             if args.skip_labels:
                 print(f"Entries with skipped labels in capsule data: {serotypes_df.Serotype.isin(args.skip_labels).sum()}")
                 serotypes_df = serotypes_df.dropna(subset=["Serotype"])
-                public_ids = serotypes_df.Public_name.values
+                public_ids = serotypes_df[label_column].values
                 contig_ids = serotypes_df.Contig_ID.values
             serotypes = serotypes_df.Serotype.values
             assert serotypes_df.Serotype.isnull().sum() == 0, "Some capsule entries are missing serotype labels"

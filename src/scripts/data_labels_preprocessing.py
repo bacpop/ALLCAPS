@@ -3,12 +3,30 @@ This script loads raw labels and cleans/standardizes serotype entries.
 It takes a raw labels TSV file and outputs a cleaned version with standardized serotypes.
 """
 
-# Example usage: python src/scripts/labels_preprocessing.py --raw_labels data/GPS_All_raw_labels.tsv --output_dir results/
+# Example usage: python src/scripts/labels_preprocessing.py --metadata data/monocle-metadata.tsv --output_dir results/
 import re
 import pandas as pd
 import numpy as np
 import argparse
 from pathlib import Path
+
+from consts import NON_TYPEABLE, DEFAULT_LABEL_COLUMN
+
+
+def read_monocle_metadata(file_path):
+    """
+    Reads the monocle metadata TSV file into a pandas DataFrame.
+
+    Args:
+        file_path: Path to the TSV file
+
+    Returns:
+        pandas DataFrame with metadata
+    """
+    selected_columns = ["Sample_name", "Public_name", "Lane_id", "ERR", "In_silico_serotype"]
+    df = pd.read_csv(file_path)[selected_columns]
+    df = df.rename(columns={"In_silico_serotype": DEFAULT_LABEL_COLUMN})
+    return df
 
 
 def cleanup_serotype(value):
@@ -21,15 +39,35 @@ def cleanup_serotype(value):
     Returns:
         Cleaned serotype string
     """
+
     serotype_mapping = {
-        "NT": "Non-typeable",
-        "SWISS_NT": "Non-typeable",
-        "UNTYPABLE": "Non-typeable",
-        "COVERAGE TOO LOW": "Non-typeable",
-        "ALTERNATIVE_ALIB_NT": "Non-typeable",
-        "Non-typeable/NCC2a": "Non-typeable",
-        "SEROBA FAILURE": "Non-typeable",
+        '6A(6A-I)': "6A",
+        '6A(6A-II)': "6A",
+        '6A(6A-III)': "6A",
+        '6A(6A-IV)': "6A",
+        '6B(6B-I)': "6B",
+        '6E(6B)': "6E",
+        '6E(6A)': "6E",
+        '11A(11F_LIKE)': "11A",
+        '11A/11B/11C/11D/11E/11F/11F_LIKE': "11",
+        '19A(19A-I/19A-II)': "19A",
+        '19A(19A-I)': "19A",
+        '19A(19A-II)': "19A",
+        '19F(19AF)': "19F",
+        '19F(19F-II)': "19F",
+        '19F(19F-III)': "19F",
+        '23B(23B1)': "23B",
+        '24B/24C/24F': "24",
+        '33A/33E/33F': "33",
+        '33F(33F-1B)': "33F",
+        '33F(33F-1B)': "33F",
+        'POSSIBLE 6A': "6A",
+        'POSSIBLE 6C': "6C",
+        'POSSIBLE 6D': "6D",
+        'POSSIBLE 6E': "6E",
         "SEROGROUP 24": "24",
+        # '33A/33F': "?",
+        # '35B/35D': "?",
     }
 
     untypables = [
@@ -39,17 +77,19 @@ def cleanup_serotype(value):
         "COVERAGE TOO LOW",
         "ALTERNATIVE_ALIB_NT",
         "SEROBA FAILURE",
+        "NCC2_ALIC_ALID_NON_ENCAPSULATED",
+        "Non-typeable/NCC2a",
     ]
 
     if pd.isna(value):
-        return np.nan
+        return NON_TYPEABLE
 
     # Standardize mappings
     if value in serotype_mapping:
         return serotype_mapping[value]
 
     if value in untypables:
-        return "Non-typeable"
+        return NON_TYPEABLE
 
     value = value.strip().upper()
 
@@ -68,7 +108,7 @@ def cleanup_serotype(value):
 
     # If still irrelevant, mark as Non-typeable
     if not re.match(r"^[A-Z0-9/]+$", value):
-        return "Non-typeable"
+        return NON_TYPEABLE
 
     return value
 
@@ -85,7 +125,7 @@ def process_labels(raw_path, clean_path):
         Cleaned pandas DataFrame
     """
     print(f"Loading raw labels from {raw_path}")
-    raw_df = pd.read_csv(raw_path, sep="\t")
+    raw_df = read_monocle_metadata(raw_path)
     print(f"Loaded {len(raw_df)} raw label entries")
 
     original_serotypes = raw_df.Serotype.unique().tolist()
@@ -98,19 +138,17 @@ def process_labels(raw_path, clean_path):
     print(f"After cleaning: {len(cleaned_serotypes)} unique serotypes")
     print(f"The removed serotypes: {set(original_serotypes) - set(cleaned_serotypes)}")
     print(f"Saving cleaned labels to {clean_path}")
-    raw_df.to_csv(clean_path, sep="\t", index=False)
+    raw_df.to_csv(clean_path, index=False)
 
     return raw_df
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Clean and standardize GPS serotype labels from raw labels file",
+        description="Clean and standardize GPS metadata and serotype labels from raw labels file",
     )
 
-    parser.add_argument(
-        "--raw_labels", required=True, help="Path to raw labels TSV file"
-    )
+    parser.add_argument("--metadata", required=True, help="Path to raw labels TSV file")
     parser.add_argument("--output_dir", required=True, help="Path for output files")
 
     args = parser.parse_args()
@@ -121,11 +159,12 @@ def main():
 
     # Process labels
     print("Processing raw labels...")
-    result = process_labels(args.raw_labels, output_path / "cleaned_labels.tsv")
+    result = process_labels(args.metadata, output_path / "cleaned_labels.csv")
 
     print("\nSummary of cleaned serotypes:")
-    serotype_counts = result.Serotype.value_counts()
-    print(serotype_counts.head(10))
+    serotype_counts = result.Serotype.value_counts().to_dict()
+    for serotype in sorted(serotype_counts.keys()):
+        print(f"\t- {serotype}:\t {serotype_counts[serotype]}")
     print(f"\nTotal entries: {len(result)}")
     print(f"Unique serotypes: {result.Serotype.nunique()}")
     print("Processing completed successfully!")

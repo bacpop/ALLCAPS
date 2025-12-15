@@ -3,8 +3,9 @@
 RND_STATE = 42
 
 # Data dependent constants
+NON_TYPEABLE = "Non-typeable"
 DEFAULT_LABEL_COLUMN = "Serotype"
-DEFAULT_MISSING_LABEL = "Non-typeable"
+DEFAULT_MISSING_LABEL = NON_TYPEABLE
 CONTIG_SEP = "#"
 
 # 2D visualization
