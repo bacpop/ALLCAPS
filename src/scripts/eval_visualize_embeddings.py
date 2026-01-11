@@ -10,11 +10,9 @@ from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
 from utils import load_data, map_serotype_to_group
-from consts import (
-    DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN,
-    DEFAULT_DOWNSAMPLE_SIZE, DEFAULT_SEP
-)
+from consts import DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN
 
+DEFAULT_FIGSIZE = (15, 15)
 
 def calculate_pca(embeddings, labels, output_prefix):
     out_path = output_prefix + ".pca.csv"
@@ -54,7 +52,7 @@ def calculate_umap(embeddings, labels, output_prefix):
     return reducer, UMAP_embedding_df
 
 
-def plot_projection(df, method, output_dir):
+def plot_projection(df, method, output_prefix, params={}):
     """
     Plot the visualization of the dataframe.
 
@@ -63,12 +61,16 @@ def plot_projection(df, method, output_dir):
     - output_path: Path to save the UMAP plot.
     """
 
-    serotypes = df['Serotype'].apply(map_serotype_to_group)
+    serotypes = df['Serotype']  # .apply(map_serotype_to_group)
     unique_serotypes = serotypes.unique()
+    
+    # Setup plot params
+    figsize = params["figsize"]
+    
     colors = plt.cm.tab20(np.linspace(0, 1, len(unique_serotypes)))  # TODO explore colormaps
     color_map = dict(zip(unique_serotypes, colors))
 
-    plt.figure(figsize=(15, 15))
+    plt.figure(figsize=figsize)
     for serotype, color in color_map.items():
         subset = df[serotypes == serotype]
         plt.scatter(subset[f'{method}1'], subset[f'{method}2'], label=serotype, color=color, alpha=0.7, s=10)
@@ -81,7 +83,7 @@ def plot_projection(df, method, output_dir):
     plt.gca().set_facecolor('black')
 
     plt.tight_layout()
-    plt.savefig(output_dir + f'/{method.lower()}_visualization.pdf')
+    plt.savefig(output_prefix + f'_{method.lower()}.pdf')
     plt.close()
 
 
@@ -89,13 +91,14 @@ def parse_args():
     parser = argparse.ArgumentParser(description="2D visualization of data.")
     parser.add_argument('--embeddings', type=str, required=True, help='Path to the embeddings.')
     parser.add_argument('--labels', type=str, required=True, help='Path to the labels file (CSV format).')
-    parser.add_argument('--output_dir', type=str, required=True, help='Path to save the UMAP plot.')
+    parser.add_argument('--output_prefix', type=str, required=True, help='Path to save the figure (prefix).')
     parser.add_argument('--method', type=str, choices=['umap', 'tsne', 'pca'], default='umap',
                         help='Dimensionality reduction method to use for visualization.')
     parser.add_argument('--params', type=str, default="{}", help='JSON string of parameters.')
     parser.add_argument('--show_noncbl', action='store_true', default=False, help='Include non capsule sequences in the plot.')
     parser.add_argument('--downsample', type=int, default=None, help='Downsample the data for faster plotting.')
     parser.add_argument('--serotypes_list', type=str, default=None, help='Comma-separated list of serotypes to include in the plot.')
+    parser.add_argument('--figsize', type=str, default=f"{DEFAULT_FIGSIZE[0]},{DEFAULT_FIGSIZE[1]}", help=f'Figure size as "width,height" (default: {DEFAULT_FIGSIZE})')
     args = parser.parse_args()
 
     try:
@@ -109,6 +112,13 @@ def parse_args():
     finally:
         print("Model parameters:", args.params)
 
+    try:
+        figsize = tuple(map(float, args.figsize.split(',')))
+    except ValueError:
+        print(f"Error: figsize must be in 'width,height' format. Using default {DEFAULT_FIGSIZE}.")
+        figsize = DEFAULT_FIGSIZE
+    
+    args.params["figsize"] = figsize
     if args.serotypes_list:
         args.serotypes_list = list(map(str.strip, args.serotypes_list.split(',')))
     else:
@@ -118,12 +128,10 @@ def parse_args():
 
 def main(args):
     print(f"Starting visualization with method: {args.method}") 
-    missing_label = args.params.get("missing_label", DEFAULT_MISSING_LABEL)
-    label_column = args.params.get("label_column", DEFAULT_LABEL_COLUMN)
-    sep = args.params.get("sep", DEFAULT_SEP)
+    missing_label, label_column = DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN
     
     print("Loading the data...")
-    embeddings, labels = load_data(args.embeddings, args.labels, missing_label=missing_label, sep=sep)
+    embeddings, labels = load_data(args.embeddings, args.labels, missing_label=missing_label)
     labels = labels \
         .rename({label_column: "Serotype"}, axis=1) \
         .fillna(missing_label)
@@ -151,12 +159,12 @@ def main(args):
         calculate_tsne if args.method.lower() == 'tsne' else
         calculate_pca,
         labels=labels[indices_mask],
-        output_prefix=args.output_dir
+        output_prefix=args.output_prefix
     )
     _, embedding_df = calc_fn(embeddings[indices_mask])
 
     print("Plotting...")
-    plot_projection(embedding_df, args.method.upper(), args.output_dir)
+    plot_projection(embedding_df, args.method.upper(), args.output_prefix, args.params)
 
 
 if __name__ == "__main__":
