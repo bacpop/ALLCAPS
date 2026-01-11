@@ -188,3 +188,41 @@ class TransformerLRClassifier(BaseModel):
         logits = self.cbl_classifier(z)  # Classifier output (B, output_dim)
         serotype_logits = self.serotype_classifier(z)
         return logits, serotype_logits, z
+
+
+@register_model("transformer_trihead_lr")
+class TransformerTriHeadLR(BaseModel):
+    def __init__(self, input_dim, num_classes, output_dim=128, max_len=64, nhead=4, num_layers=2, **kwargs):
+        super().__init__(**kwargs)
+        self.pos_embed = nn.Embedding(max_len, input_dim)
+
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=input_dim,
+            nhead=nhead,
+            dim_feedforward=4 * input_dim,
+            batch_first=True
+        )
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.cbl_classifier = nn.Linear(output_dim, 2)
+        
+        assert len(num_classes) == 2, "num_classes should be a list or tuple of length 2 for the two classifiers."
+        self.serotype_classifier = nn.Linear(output_dim, num_classes[0])
+        self.genogroup_classifier = nn.Linear(output_dim, num_classes[1])
+
+        self.project = nn.Sequential(
+            nn.Linear(input_dim, input_dim),
+            nn.ReLU(),
+            nn.Linear(input_dim, output_dim)
+        )
+
+    def forward(self, x):
+        B, L, D = x.size()
+        pos = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
+        x = x + self.pos_embed(pos)
+        x = self.encoder(x)  # Encoded (B, L, D)
+        x = x.mean(dim=1)  # Pooled (B, D)
+        z = F.normalize(self.project(x), dim=1)
+        logits = self.cbl_classifier(z)  # Classifier output (B, output_dim)
+        serotype_logits = self.serotype_classifier(z)
+        genogroup_logits = self.genogroup_classifier(z)
+        return logits, (serotype_logits, genogroup_logits), z
