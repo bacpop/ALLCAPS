@@ -57,7 +57,8 @@ def cleanup_serotype(value):
         '19F(19F-II)': "19F",
         '19F(19F-III)': "19F",
         '23B(23B1)': "23B",
-        '24B/24C/24F': "24",
+        '23B1': "23B",
+        '24B/24C/24F': "Serogroup 24",
         '33A/33E/33F': "33",
         '33F(33F-1B)': "33F",
         '33F(33F-1B)': "33F",
@@ -65,7 +66,9 @@ def cleanup_serotype(value):
         'POSSIBLE 6C': "6C",
         'POSSIBLE 6D': "6D",
         'POSSIBLE 6E': "6E",
-        "SEROGROUP 24": "24",
+        "SEROGROUP 24": "Serogroup 24",
+        "24": "Serogroup 24",
+
         # '33A/33F': "?",
         # '35B/35D': "?",
     }

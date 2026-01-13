@@ -34,6 +34,7 @@ SEROTYPE_GROUPS = {
     "11A": "11",
     "11B": "11",
     "11C": "11",
+    "11D": "11",
     "11E": "11",
     "12A": "12_44_46",
     "12B": "12_44_46",
@@ -53,19 +54,21 @@ SEROTYPE_GROUPS = {
     "20": "20",
     "20A": "20",
     "20B": "20",
+    "20C": "20",
     "22A": "22",
     "22F": "22",
     "23A": "23",
     "23B": "23",
     "23B1": "23",
     "23F": "23",
-    "24": "24",
-    "24A": "24",
-    "24F": "24",
+    "24A": "Serogroup 24",
+    "24B": "Serogroup 24",
+    "24F": "Serogroup 24",
     "25A": "25A_25F_38",
     "25F": "25A_25F_38",
     "28A": "28",
     "28F": "28",
+    "32F": "32",
     "33A": "33A_33F_37",
     "33A/33F": "33A_33F_37",
     "33B": "33B_33D",
@@ -89,7 +92,7 @@ def map_serotype_to_group(serotype):
     """ Map serotype to a more coarse label by
     looking it up in the serogroup/genogroups data. """
     if not isinstance(serotype, str):
-        raise ValueError("Serotype must be a string.")
+        raise ValueError("Serotype must be a string. Got: {} ({})".format(serotype, type(serotype)))
     
     if serotype in WHITELIST:
         return serotype
