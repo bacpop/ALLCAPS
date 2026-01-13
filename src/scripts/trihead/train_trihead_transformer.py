@@ -79,7 +79,7 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
         coarse_labels = []
         fine_labels = []
         for lbl in serotype_label:
-            if isinstance(lbl, (list, tuple)) and len(lbl) >= 2:
+            if isinstance(lbl, (list, tuple, np.ndarray)) and len(lbl) >= 2:
                 coarse_labels.append(lbl[0])
                 fine_labels.append(lbl[-1])
             else:
@@ -144,7 +144,7 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
             coarse_labels = []
             fine_labels = []
             for lbl in serotype_label:
-                if isinstance(lbl, (list, tuple)) and len(lbl) >= 2:
+                if isinstance(lbl, (list, tuple, np.ndarray)) and len(lbl) >= 2:
                     coarse_labels.append(lbl[0])
                     fine_labels.append(lbl[-1])
                 else:
