@@ -213,6 +213,14 @@ def main(args):
     results_df["pred_argmax"] = results_df["serotype_logits"].apply(
         lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
     )
+    # Save query embeddings
+    os.makedirs(args.output_dir, exist_ok=True)
+    np.savez_compressed(
+        os.path.join(args.output_dir, "query_embeddings.npz"),
+        record_ids=results_df.index.to_numpy(),
+        embeddings=np.stack(results_df["embedding"].values)
+    )
+    # Save full results
     results_df \
         .drop(columns=["embedding", "serotype_logits"]) \
         .to_csv(os.path.join(args.output_dir, "query_results.csv"))
