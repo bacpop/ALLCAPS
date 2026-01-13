@@ -8,12 +8,14 @@ import pandas as pd
 from sklearn.metrics import classification_report, f1_score, roc_curve, auc
 import matplotlib.pyplot as plt
 
-from models import TransformerLRClassifier
+from models import ModelRegistry
 from consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE
 
+DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 
 def main(args):
     sep = args.model_params.get("sep", DEFAULT_SEP)
+    head_model = args.model_params.get("head_model", DEFAULT_HEAD_MODEL)
 
     print(f"Loading embeddings from: {args.embeddings}")
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
@@ -38,15 +40,9 @@ def main(args):
     print(f"Number of serotypes: {num_serotypes}")
     
     # Initialize model with saved configuration
-    model = TransformerLRClassifier(
-        input_dim=model_config['input_dim'],
-        num_classes=model_config['num_classes'],
-        output_dim=model_config['output_dim'],
-        nhead=model_config['nhead'],
-        num_layers=model_config['num_layers']
-    ).to(device)
-    
-    # Load the model state
+    model = ModelRegistry.get_model_class(head_model) \
+        .from_config(model_config) \
+        .to(device)
     model.load_state_dict(model_save_dict['model_state_dict'])
     model.eval()
 

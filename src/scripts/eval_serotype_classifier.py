@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
 
-from models import TransformerLRClassifier
+from models import ModelRegistry
 from consts import (
     DEFAULT_LABEL_COLUMN, DEFAULT_NONCBL_LABEL, DEFAULT_SEP,
     DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP,
@@ -15,6 +15,7 @@ from consts import (
 )
 from utils import get_sample_id
 
+DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 
 def main(args):
     device = torch.device(args.device)
@@ -23,6 +24,7 @@ def main(args):
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
     noncbl_label = args.model_params.get("noncbl_label", DEFAULT_NONCBL_LABEL)
+    head_model = args.model_params.get("head_model", DEFAULT_HEAD_MODEL)
     
     print(f"Loading embeddings and labels")
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
@@ -44,15 +46,9 @@ def main(args):
     print(f"Number of serotypes: {num_serotypes}")
     
     # Initialize model with saved configuration
-    model = TransformerLRClassifier(
-        input_dim=model_config['input_dim'],
-        num_classes=model_config['num_classes'],
-        output_dim=model_config['output_dim'],
-        nhead=model_config['nhead'],
-        num_layers=model_config['num_layers']
-    ).to(device)
-    
-    # Load the model state
+    model = ModelRegistry.get_model_class(head_model) \
+        .from_config(model_config) \
+        .to(device)
     model.load_state_dict(model_save_dict['model_state_dict'])
     model.eval()
 
@@ -230,13 +226,13 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate serotype classification using TransformerLRClassifier")
+    parser = argparse.ArgumentParser(description="Evaluate serotype classification")
     parser.add_argument("--embeddings", required=True, 
                         help="Path to .npz embeddings file containing sample embeddings")
     parser.add_argument("--labels", 
                         help="TSV file with true serotype labels indexed by sample ID")
     parser.add_argument("--model", required=True,
-                        help="Path to the saved TransformerLRClassifier model file (.pth)")
+                        help="Path to the saved model file (.pth)")
     parser.add_argument("--output_dir", required=True,
                         help="Output directory for classification report")
     parser.add_argument("--device", default="cpu",
