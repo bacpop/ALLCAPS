@@ -99,6 +99,8 @@ def parse_args():
     parser.add_argument('--downsample', type=int, default=None, help='Downsample the data for faster plotting.')
     parser.add_argument('--serotypes_list', type=str, default=None, help='Comma-separated list of serotypes to include in the plot.')
     parser.add_argument('--figsize', type=str, default=f"{DEFAULT_FIGSIZE[0]},{DEFAULT_FIGSIZE[1]}", help=f'Figure size as "width,height" (default: {DEFAULT_FIGSIZE})')
+    parser.add_argument('--additional_embeddings', type=str, default=None, help='Path to additional embeddings to include in the plot.')
+    parser.add_argument('--additional_legend', type=str, default="Query", help='The label to use for additional embeddings in the legend.')
     args = parser.parse_args()
 
     try:
@@ -117,7 +119,7 @@ def parse_args():
     except ValueError:
         print(f"Error: figsize must be in 'width,height' format. Using default {DEFAULT_FIGSIZE}.")
         figsize = DEFAULT_FIGSIZE
-    
+
     args.params["figsize"] = figsize
     if args.serotypes_list:
         args.serotypes_list = list(map(str.strip, args.serotypes_list.split(',')))
@@ -154,14 +156,28 @@ def main(args):
         print("Using only capsule locus embeddings (cbl).")
         indices_mask &= labels["Is_capsule"]
 
+    embeddings, labels = embeddings[indices_mask], labels[indices_mask]
+
+    if args.additional_embeddings:
+        additional_embeddings_npz = np.load(args.additional_embeddings, allow_pickle=True)
+        additional_embeddings = additional_embeddings_npz['embeddings']
+        additional_record_ids = additional_embeddings_npz['record_ids']
+        print(f"Adding {len(additional_embeddings)} additional embeddings to the plot.")
+        embeddings = np.vstack([embeddings, additional_embeddings])
+        additional_labels = pd.DataFrame({
+            'Serotype': [args.additional_legend] * len(additional_embeddings)
+        })
+        additional_labels.set_index(args.additional_legend + "|" + pd.Index(additional_record_ids), inplace=True)
+        labels = pd.concat([labels, additional_labels], ignore_index=True)  # .reset_index(drop=True) TODO ?
+
     calc_fn = partial(
         calculate_umap if args.method.lower() == 'umap' else
         calculate_tsne if args.method.lower() == 'tsne' else
         calculate_pca,
-        labels=labels[indices_mask],
+        labels=labels,
         output_prefix=args.output_prefix
     )
-    _, embedding_df = calc_fn(embeddings[indices_mask])
+    _, embedding_df = calc_fn(embeddings)
 
     print("Plotting...")
     plot_projection(embedding_df, args.method.upper(), args.output_prefix, args.params)
