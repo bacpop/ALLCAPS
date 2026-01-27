@@ -3,6 +3,7 @@
 RND_STATE = 42
 
 # Data dependent constants
+TRAIN_SPLIT_RATIO = 0.9
 NON_TYPEABLE = "Non-typeable"
 DEFAULT_LABEL_COLUMN = "Serotype"
 DEFAULT_MISSING_LABEL = NON_TYPEABLE
@@ -26,7 +27,8 @@ DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
 DEFAULT_CV = 5  # Number of cross-validation folds
 
 # Inference
-DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
+DEFAULT_MODEL = "neuralbioinfo/prokbert-mini-long"
+DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 DEFAULT_CHUNK_SIZE = 4000
 DEFAULT_STRIDE_RATIO = 0.5  # 50% overlap
 DEFAULT_MAX_LEN = (

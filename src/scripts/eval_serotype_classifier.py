@@ -11,11 +11,10 @@ from .models import ModelRegistry
 from .consts import (
     DEFAULT_LABEL_COLUMN, DEFAULT_NONCBL_LABEL, DEFAULT_SEP,
     DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP,
-    DEFAULT_ENERGY_TEMPERATURE
+    DEFAULT_ENERGY_TEMPERATURE, DEFAULT_HEAD_MODEL
 )
 from .utils import get_sample_id
 
-DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 
 def main(args):
     device = torch.device(args.device)
