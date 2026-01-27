@@ -7,11 +7,11 @@ import numpy as np
 from Bio import SeqIO
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from consts import (
+from .consts import (
     DEFAULT_MODEL, DEFAULT_CHUNK_SIZE,
     DEFAULT_STRIDE_RATIO, DEFAULT_MAX_LEN
 )
-from utils import chunk_sequence, embed_chunks
+from .utils import chunk_sequence, embed_chunks
 
 
 def main():
@@ -48,7 +48,7 @@ def main():
 
     print(f"Loading sequences from {args.fasta}...")
     total = sum(1 for _ in SeqIO.parse(args.fasta, "fasta"))
-    
+
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
         sample_name = seq_id.split("__")[0]  # Public ID + Contig ID
@@ -57,6 +57,7 @@ def main():
             print(f"Skipping {sample_name} as it already exists.")
 
         chunks = chunk_sequence(str(record.seq)[:args.seq_max_len], chunk_size, stride)  # TODO This is terribly wrong. WIll fix for the new data (SPAdes).
+
         if len(chunks) == 0:
             print(f"Skipping {sample_name} due to no valid chunks.")
             continue

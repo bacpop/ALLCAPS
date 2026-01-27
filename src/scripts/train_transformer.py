@@ -13,10 +13,10 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold
 
-from models import TransformerLRClassifier, ContrastiveChunkedDataset
-from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
+from .models import TransformerLRClassifier, ContrastiveChunkedDataset
+from .utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
-from consts import (
+from .consts import (
     RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
     DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
     DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,

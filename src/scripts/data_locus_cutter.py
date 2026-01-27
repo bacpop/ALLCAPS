@@ -19,7 +19,7 @@ from functools import partial
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
-from consts import RND_STATE
+from .consts import RND_STATE
 
 
 ID_SEP = "__"

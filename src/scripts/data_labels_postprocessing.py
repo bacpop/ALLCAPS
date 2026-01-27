@@ -9,7 +9,7 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
-from consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP
+from .consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP
 
 
 def main():
@@ -51,6 +51,7 @@ def main():
         [1, 0], ["base_embeddings_chunked/cbl", "base_embeddings_chunked/non-cbl"]
     ):
         names = [f.split(".")[0] for f in os.listdir(output_path / subdir) if f.endswith(".npy")]
+        assert names, f"The {subdir} is empty"
         public_ids, contig_ids = zip(*[name.split(CONTIG_SEP) for name in names])
         if is_capsule:
             serotypes_df = pd.DataFrame({label_column: public_ids, "Contig_ID": contig_ids}) \

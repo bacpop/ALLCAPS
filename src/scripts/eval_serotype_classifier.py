@@ -7,13 +7,13 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
 
-from models import ModelRegistry
-from consts import (
+from .models import ModelRegistry
+from .consts import (
     DEFAULT_LABEL_COLUMN, DEFAULT_NONCBL_LABEL, DEFAULT_SEP,
     DEFAULT_BATCH_SIZE, DEFAULT_MISSING_LABEL, CONTIG_SEP,
     DEFAULT_ENERGY_TEMPERATURE
 )
-from utils import get_sample_id
+from .utils import get_sample_id
 
 DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 

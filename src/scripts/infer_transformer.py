@@ -9,10 +9,10 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
 
-from models import TransformerLRClassifier, ContrastiveChunkedDataset
-from utils import collate_fn, get_sample_id
+from .models import TransformerLRClassifier, ContrastiveChunkedDataset
+from .utils import collate_fn, get_sample_id
 
-from consts import (
+from .consts import (
     DEFAULT_MISSING_LABEL, DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
 )
 

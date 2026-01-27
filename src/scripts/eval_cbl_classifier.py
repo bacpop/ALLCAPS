@@ -8,8 +8,8 @@ import pandas as pd
 from sklearn.metrics import classification_report, f1_score, roc_curve, auc
 import matplotlib.pyplot as plt
 
-from models import ModelRegistry
-from consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE
+from .models import ModelRegistry
+from .consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE
 
 DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 

@@ -9,8 +9,8 @@ import umap
 from sklearn.manifold import TSNE
 from sklearn.decomposition import PCA
 
-from utils import load_data, map_serotype_to_group
-from consts import DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN
+from .utils import load_data, map_serotype_to_group
+from .consts import DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN
 
 DEFAULT_FIGSIZE = (15, 15)
 
@@ -100,7 +100,8 @@ def parse_args():
     parser.add_argument('--serotypes_list', type=str, default=None, help='Comma-separated list of serotypes to include in the plot.')
     parser.add_argument('--figsize', type=str, default=f"{DEFAULT_FIGSIZE[0]},{DEFAULT_FIGSIZE[1]}", help=f'Figure size as "width,height" (default: {DEFAULT_FIGSIZE})')
     parser.add_argument('--additional_embeddings', type=str, default=None, help='Path to additional embeddings to include in the plot.')
-    parser.add_argument('--additional_legend', type=str, default="Query", help='The label to use for additional embeddings in the legend.')
+    parser.add_argument('--additional_labels', type=str, default=None, help='The label to use for additional embeddings.')
+    parser.add_argument('--additional_legend', type=str, default="Query", help='The label to use for additional embeddings in the legend. If the --additional-labels argument is provided, this will be used as a prefix.')
     args = parser.parse_args()
 
     try:
@@ -131,6 +132,7 @@ def parse_args():
 def main(args):
     print(f"Starting visualization with method: {args.method}") 
     missing_label, label_column = DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN
+    LABEL_SEP = "|"
     
     print("Loading the data...")
     embeddings, labels = load_data(args.embeddings, args.labels, missing_label=missing_label)
@@ -160,15 +162,19 @@ def main(args):
 
     if args.additional_embeddings:
         additional_embeddings_npz = np.load(args.additional_embeddings, allow_pickle=True)
-        additional_embeddings = additional_embeddings_npz['embeddings']
-        additional_record_ids = additional_embeddings_npz['record_ids']
-        print(f"Adding {len(additional_embeddings)} additional embeddings to the plot.")
-        embeddings = np.vstack([embeddings, additional_embeddings])
-        additional_labels = pd.DataFrame({
+        additional_embeddings, additional_record_ids = additional_embeddings_npz['embeddings'], additional_embeddings_npz['record_ids']
+        additional_labels_df = pd.DataFrame({
             'Serotype': [args.additional_legend] * len(additional_embeddings)
         })
-        additional_labels.set_index(args.additional_legend + "|" + pd.Index(additional_record_ids), inplace=True)
-        labels = pd.concat([labels, additional_labels], ignore_index=True)  # .reset_index(drop=True) TODO ?
+        if args.additional_labels:
+            additional_labels = pd.read_csv(args.additional_labels)["Serotype"]
+            assert len(additional_embeddings) == len(additional_labels), \
+                "The number of additional embeddings must match the number of additional labels."
+            additional_labels_df.loc[:, 'Serotype'] = additional_labels_df['Serotype'] + LABEL_SEP + additional_labels
+        additional_labels_df.set_index(args.additional_legend + LABEL_SEP + pd.Index(additional_record_ids), inplace=True)
+        print(f"Adding {len(additional_embeddings)} additional embeddings to the plot.")
+        embeddings = np.vstack([embeddings, additional_embeddings])
+        labels = pd.concat([labels, additional_labels_df], ignore_index=True)  # .reset_index(drop=True) TODO ?
 
     calc_fn = partial(
         calculate_umap if args.method.lower() == 'umap' else

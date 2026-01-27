@@ -7,7 +7,7 @@ import numpy as np
 from typing import Tuple
 import pandas as pd
 
-from consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL
+from .consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL
 EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of

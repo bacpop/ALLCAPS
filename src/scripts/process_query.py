@@ -10,12 +10,12 @@ from typing import List, Tuple, Optional
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from models import ModelRegistry, TransformerLRClassifier
-from consts import (
+from .models import ModelRegistry, TransformerLRClassifier
+from .consts import (
     DEFAULT_MODEL, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LEN,
     DEFAULT_STRIDE_RATIO, DEFAULT_ENERGY_TEMPERATURE
 )
-from utils import chunk_sequence, embed_chunks
+from .utils import chunk_sequence, embed_chunks
 
 
 EPS = 1e-6

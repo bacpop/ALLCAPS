@@ -10,7 +10,7 @@ import numpy as np
 import argparse
 from pathlib import Path
 
-from consts import NON_TYPEABLE, DEFAULT_LABEL_COLUMN
+from .consts import NON_TYPEABLE, DEFAULT_LABEL_COLUMN
 
 
 def read_monocle_metadata(file_path):
@@ -68,6 +68,8 @@ def cleanup_serotype(value):
         'POSSIBLE 6E': "6E",
         "SEROGROUP 24": "Serogroup 24",
         "24": "Serogroup 24",
+        # "24A": "Serogroup 24",  # TODO?
+        # "24F": "Serogroup 24",  # TODO?
 
         # '33A/33F': "?",
         # '35B/35D': "?",
