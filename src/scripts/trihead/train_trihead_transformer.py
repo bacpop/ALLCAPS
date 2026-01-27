@@ -13,10 +13,10 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold
 
-from models import TransformerTriHeadLR, ContrastiveChunkedDataset
-from utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
+from ..models import TransformerTriHeadLR, ContrastiveChunkedDataset
+from ..utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
-from consts import (
+from ..consts import (
     RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
     DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
     DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
@@ -26,6 +26,7 @@ from consts import (
 )
 
 EPS = 1e-9
+ALPHA_SERO = 2
 WANDB_PROJECT_NAME = "logistic-trihead"
 
 def parse_args():
@@ -105,7 +106,7 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
         if capsule_mask.sum() > 1:
             contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
 
-        loss = ce_loss_val + serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
+        loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -170,7 +171,7 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
             if capsule_mask.sum() > 1:
                 contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
 
-            loss = ce_loss_val + serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
+            loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
             total_loss += loss.item()
 
             # CBL accuracy
