@@ -141,7 +141,7 @@ def main():
 
     all_train_meta, all_test_meta = [], []
     for fasta_path, meta_path, ratio in zip(fastas, metas, ratios):
-        print(f"Splitting {fasta_path} with {meta_path} at train_ratio={ratio}")
+        print(f"\nSplitting {fasta_path} with {meta_path} at train_ratio={ratio}")
         train_recs, test_recs, train_meta, test_meta = split_one(
             fasta_path, meta_path, ratio, args.id_column, args.serotype_column, rng
         )
@@ -161,10 +161,7 @@ def main():
     if all_test_meta:
         pd.concat(all_test_meta, ignore_index=True).to_csv(test_meta_path, index=False)
 
-    print(f"Wrote train FASTA: {train_fasta_path}")
-    print(f"Wrote test FASTA: {test_fasta_path}")
-    print(f"Wrote train metadata: {train_meta_path}")
-    print(f"Wrote test metadata: {test_meta_path}")
+    print(f"\nWrote train/test fasta/metadata files to {args.output_dir}.")
 
 
 if __name__ == "__main__":

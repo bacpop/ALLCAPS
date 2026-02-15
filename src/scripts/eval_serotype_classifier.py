@@ -27,7 +27,7 @@ def main(args):
     
     print(f"Loading embeddings and labels")
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
-    labels_df = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels_df = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
     labels_df['Serotype'] = labels_df[label_column].fillna(missing_label)  # TODO should be empty already
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 

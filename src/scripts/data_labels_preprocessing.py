@@ -59,7 +59,7 @@ def cleanup_serotype(value):
         '23B(23B1)': "23B",
         '23B1': "23B",
         '24B/24C/24F': "Serogroup 24",
-        '33A/33E/33F': "33",
+        '33A/33E/33F': "Serogroup 33",
         '33F(33F-1B)': "33F",
         '33F(33F-1B)': "33F",
         'POSSIBLE 6A': "6A",
@@ -67,10 +67,10 @@ def cleanup_serotype(value):
         'POSSIBLE 6D': "6D",
         'POSSIBLE 6E': "6E",
         "SEROGROUP 24": "Serogroup 24",
-        "24": "Serogroup 24",
-        # "24A": "Serogroup 24",  # TODO?
-        # "24F": "Serogroup 24",  # TODO?
-
+        "24": "Serogroup 24",  # <-- TODO rename "24"s to "24F"?
+        "33": "Serogroup 33",  # <-- TODO rename "33"s to "33F"?
+        # "24A": "Serogroup 24",
+        # "24F": "Serogroup 24",
         # '33A/33F': "?",
         # '35B/35D': "?",
     }
@@ -113,6 +113,7 @@ def cleanup_serotype(value):
 
     # If still irrelevant, mark as Non-typeable
     if not re.match(r"^[A-Z0-9/]+$", value):
+        print(f"Warning: Unrecognized serotype format '{value}', marking as Non-typeable")
         return NON_TYPEABLE
 
     return value
@@ -138,6 +139,9 @@ def process_labels(raw_path, clean_path):
 
     print("Cleaning serotypes...")
     raw_df["Serotype"] = raw_df["Serotype"].apply(cleanup_serotype)
+
+    print("Dropping Non-typeables...")
+    raw_df = raw_df[raw_df["Serotype"] != NON_TYPEABLE]
 
     cleaned_serotypes = raw_df.Serotype.unique().tolist()
     print(f"After cleaning: {len(cleaned_serotypes)} unique serotypes")
