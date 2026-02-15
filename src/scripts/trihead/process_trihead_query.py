@@ -10,12 +10,12 @@ from typing import List, Tuple, Optional, Union
 import torch
 from transformers import AutoTokenizer, AutoModelForMaskedLM
 
-from models import ModelRegistry, TransformerLRClassifier, TransformerTriHeadLR
-from consts import (
+from ..models import ModelRegistry, TransformerLRClassifier, TransformerTriHeadLR
+from ..consts import (
     DEFAULT_MODEL, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LEN,
     DEFAULT_STRIDE_RATIO, DEFAULT_ENERGY_TEMPERATURE
 )
-from utils import chunk_sequence, embed_chunks
+from ..utils import chunk_sequence, embed_chunks
 
 
 EPS = 1e-6
@@ -234,6 +234,13 @@ def main(args):
         )
         drop_cols.append("genogroup_logits")
 
+    # Save query results
+    os.makedirs(args.output_dir, exist_ok=True)
+    np.savez_compressed(
+        os.path.join(args.output_dir, "query_embeddings.npz"),
+        record_ids=results_df.index.to_numpy(),
+        embeddings=np.stack(results_df["embedding"].values)
+    )
     results_df.drop(columns=drop_cols).to_csv(os.path.join(args.output_dir, "query_results.csv"))
 
 

@@ -13,7 +13,7 @@ from torch import nn
 from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold
 
-from ..models import TransformerTriHeadLR, ContrastiveChunkedDataset
+from ..models import TransformerTriHeadLR, DatasetRegistry
 from ..utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn
 
 from ..consts import (
@@ -28,6 +28,8 @@ from ..consts import (
 EPS = 1e-9
 ALPHA_SERO = 2
 WANDB_PROJECT_NAME = "logistic-trihead"
+DEFAULT_DATASET_OBJECT = "contrastive_chunked"
+
 
 def parse_args():
     parser = argparse.ArgumentParser()
@@ -217,11 +219,12 @@ def main(args):
     output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
 
+    dataset_name = args.model_params.get("dataset_name", DEFAULT_DATASET_OBJECT)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     
     print("Loading data...")
-    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
     labels['Serotype'] = labels[label_column].fillna(missing_label)
 
     indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
@@ -272,14 +275,23 @@ def main(args):
     sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices].astype(str)).tolist()
     is_capsule = labels["Is_capsule"][indices].tolist()
 
+    dataset_class = DatasetRegistry.get_dataset_class(dataset_name)
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(fine_labels)), fine_labels)):  # Dummy X
         print(f"Fold {fold+1} / {k_folds}")
 
-        train_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[train_idx],
-                                             np.array(labels_known)[train_idx], np.array(is_capsule)[train_idx])
-        test_ds = ContrastiveChunkedDataset(args.embedding_dir, np.array(sample_ids)[test_idx],
-                                            np.array(labels_known)[test_idx], np.array(is_capsule)[test_idx])
+        train_ds = dataset_class(
+            embeddings_dir=args.embedding_dir,
+            sample_ids=np.array(sample_ids)[train_idx],
+            serotype_labels=np.array(labels_known)[train_idx],
+            capsule_labels=np.array(is_capsule)[train_idx]
+        )
+        test_ds = dataset_class(
+            embeddings_dir=args.embedding_dir,
+            sample_ids=np.array(sample_ids)[test_idx],
+            serotype_labels=np.array(labels_known)[test_idx],
+            capsule_labels=np.array(is_capsule)[test_idx]
+        )
 
         train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
         test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=collate_fn)
@@ -316,7 +328,12 @@ def main(args):
 
     # Retrain on all data
     print("Retraining on all data...")
-    all_ds = ContrastiveChunkedDataset(args.embedding_dir, sample_ids, labels_known, is_capsule)
+    all_ds = dataset_class(
+        embeddings_dir=args.embedding_dir,
+        sample_ids=sample_ids,
+        serotype_labels=labels_known,
+        capsule_labels=is_capsule
+    )
     all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
     model_final = TransformerTriHeadLR(

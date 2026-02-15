@@ -9,24 +9,26 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
 
-from ..models import ModelRegistry, ContrastiveChunkedDataset
+from ..models import ModelRegistry, DatasetRegistry
 from ..utils import collate_fn, get_sample_id
 
 from ..consts import (
     DEFAULT_MISSING_LABEL, DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_LABEL_COLUMN
 )
+DEFAULT_DATASET_OBJECT = "contrastive_chunked"
 
 
 def main(args):
     head_model = args.model_params.get("head_model", "transformer_trihead_lr")
+    dataset_name = args.model_params.get("dataset_name", DEFAULT_DATASET_OBJECT)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     sep = args.model_params.get("sep", DEFAULT_SEP)
-    
+
     device = torch.device(args.device)
 
     print(f"Loading labels from: {args.labels}")
-    labels = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
     labels['Serotype'] = labels[label_column].fillna(missing_label)
 
     if args.skip_labels:
@@ -42,7 +44,13 @@ def main(args):
     serotype_labels = labels["Serotype"].tolist()
     capsule_labels = labels["Is_capsule"].tolist()
 
-    dataset = ContrastiveChunkedDataset(args.embeddings_dir, sample_ids, serotype_labels, capsule_labels)
+    dataset_class = DatasetRegistry.get_dataset_class(dataset_name)
+    dataset = dataset_class(
+        embeddings_dir=args.embeddings_dir,
+        sample_ids=sample_ids,
+        serotype_labels=serotype_labels,
+        capsule_labels=capsule_labels
+    )
     loader = DataLoader(dataset, batch_size=args.batch_size, collate_fn=collate_fn, shuffle=False)
 
     print(f"Loading model from: {args.model}")
@@ -73,10 +81,10 @@ def main(args):
             sample_ids = batch["sample_id"]
             is_capsule = batch["is_capsule"].to(device)
 
-            cbl_logits, serotype_logits, z = model(inputs)
+            cbl_logits, (serotype_logits, genogroup_logits), z = model(inputs)
             z_np = z.cpu().numpy()
             cbl_probs = torch.softmax(cbl_logits, dim=1).cpu().numpy()
-            serotype_probs = torch.softmax(serotype_logits[0], dim=1).cpu().numpy()  # Only serotype logits, ignore genogroup for now
+            serotype_probs = torch.softmax(serotype_logits, dim=1).cpu().numpy()  # Only serotype logits, ignore genogroup for now
 
             for i, (emb, sid, cbl, cbl_prob, sero_prob) in enumerate(zip(z_np, sample_ids, is_capsule, cbl_probs, serotype_probs)):
                 pref = "cbl" if cbl else "non-cbl"

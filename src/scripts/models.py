@@ -41,10 +41,45 @@ class ModelRegistry:
         return cls._models[name]
 
 
+class DatasetRegistry:
+    """Registry for dataset classes with factory pattern."""
+    _datasets: Dict[str, Type[Dataset]] = {}
+    
+    @classmethod
+    def register(cls, name: str):
+        """Decorator to register a dataset class."""
+        def decorator(dataset_class: Type[Dataset]):
+            cls._datasets[name] = dataset_class
+            return dataset_class
+        return decorator
+
+    @classmethod
+    def create_dataset(cls, name: str, **kwargs) -> Dataset:
+        """Factory method to create a dataset instance."""
+        if name not in cls._datasets:
+            available = ', '.join(cls._datasets.keys())
+            raise ValueError(f"Dataset '{name}' not registered. Available datasets: {available}")
+        return cls._datasets[name](**kwargs)
+    
+    @classmethod
+    def get_dataset_class(cls, name: str) -> Type[Dataset]:
+        """Get the dataset class by name."""
+        if name not in cls._datasets:
+            available = ', '.join(cls._datasets.keys())
+            raise ValueError(f"Dataset '{name}' not registered. Available datasets: {available}")
+        return cls._datasets[name]
+
+
 # Convenience decorator
 def register_model(name: str):
     """Convenience decorator for registering models."""
     return ModelRegistry.register(name)
+
+
+# TODO merge with model registry
+def register_dataset(name: str):
+    """Convenience decorator for registering datasets."""
+    return DatasetRegistry.register(name)
 
 
 # Abstract Base Model
@@ -89,6 +124,7 @@ class ContrastiveHead(BaseModel):
         return self.net(x)
 
 
+@register_dataset("contrastive_chunked")
 class ContrastiveChunkedDataset(Dataset):
     def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels):
         """
@@ -116,6 +152,42 @@ class ContrastiveChunkedDataset(Dataset):
     def __getitem__(self, idx):
         subdir = "cbl" if self.is_capsule[idx] else "non-cbl"
         embedding_path = os.path.join(self.embedding_dir, subdir, f"{self.sample_ids[idx]}.npy")
+        return {
+            'sample_id': self.sample_ids[idx],
+            'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
+            'serotype': self.serotypes[idx],
+            'is_capsule': self.is_capsule[idx]
+        }
+
+
+@register_dataset("multidomain_chunked")
+class MultidomainChunkedDataset(Dataset):
+    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels):
+        """
+        embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
+        serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
+        """
+        self.embedding_dir = embeddings_dir
+        self.serotypes = serotype_labels
+        self.is_capsule = capsule_labels 
+        self.sample_ids = sample_ids
+
+        # TODO Validate sub-folders too
+        all_embeddings = glob.glob(os.path.join(embeddings_dir, "*.npy"))
+        file_names = [os.path.basename(f).split(".")[0] for f in all_embeddings]
+
+        missing_samples = set(self.sample_ids) - set(file_names)
+        if missing_samples:
+            print("{} sample_ids do not have a corresponding embedding file: {}".format(
+                len(missing_samples), missing_samples
+            ))
+
+    def __len__(self) -> int:
+        return len(self.sample_ids)
+    
+    def __getitem__(self, idx):
+        # subdir = "cbl" if self.is_capsule[idx] else "non-cbl"
+        embedding_path = os.path.join(self.embedding_dir, f"{self.sample_ids[idx]}.npy")
         return {
             'sample_id': self.sample_ids[idx],
             'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
