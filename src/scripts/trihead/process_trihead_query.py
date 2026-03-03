@@ -1,288 +1,280 @@
+"""Query processing pipeline for the trihead transformer serotyping model.
+
+Processes FASTA query sequences through the full two-stage pipeline:
+
+1. ProkBERT base model  → chunk embeddings
+2. TransformerTriHeadLR → CBL, serotype, genogroup logits + z embedding
+
+Supports two inference modes:
+
+- ``eval``: Single window at position 0 (matches training pipeline exactly).
+- ``scan``: Rolling window with mean-logit aggregation (for novel / full-genome
+  queries).
+
+Usage::
+
+    python -m scripts.trihead.process_trihead_query \\
+        --query query.fasta \\
+        --model_path results/transformer_model.pth \\
+        --output_dir results/ \\
+        --inference_mode eval
+"""
+
 import argparse
 import os
-import json
+from typing import Optional
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from Bio import SeqIO
-from typing import List, Tuple, Optional, Union
 import torch
-from transformers import AutoTokenizer, AutoModelForMaskedLM
+from Bio import SeqIO
+from tqdm import tqdm
 
-from ..models import ModelRegistry, TransformerLRClassifier, TransformerTriHeadLR
-from ..consts import (
-    DEFAULT_MODEL, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LEN,
-    DEFAULT_STRIDE_RATIO, DEFAULT_ENERGY_TEMPERATURE
+from ..consts import DEFAULT_ENERGY_TEMPERATURE, DEFAULT_MAX_LEN, DEFAULT_MODEL
+from ..inference import (
+    embed_sequence,
+    energy_score,
+    load_base_model,
+    load_trained_model,
+    parse_model_params_json,
+    set_deterministic_seeds,
+    softmax_predict,
 )
-from ..utils import chunk_sequence, embed_chunks
+from ..openmax import OpenMax
 
-
-EPS = 1e-6
 THRESH_CPS = 0.5
 DEFAULT_ENERGY_PERCENTILE = 99.0
 DEFAULT_ROLLING_STEP = 2000
 
-### Temporary hard-coded stats to skip JSON loading during testing
-percentiles_serotype = {
+# Temporary hard-coded energy thresholds (TODO: load from JSON / CLI)
+_PERCENTILES_SEROTYPE = {
     "93.0": -8.152,
     "95.0": -8.368741035461426,
     "99.0": -6.334590911865234,
-    "99.5": -5.951267242431641
+    "99.5": -5.951267242431641,
 }
-###
-
-def energy_score(logits, temperature=1.0) -> float:
-    if isinstance(logits, np.ndarray):
-        logits = torch.from_numpy(logits)
-    energy = -temperature * torch.logsumexp(logits / temperature, dim=-1)
-    return float(energy.item())
 
 
-def transformer_embedding(  # TODO batch this 
-    tokenizer: AutoTokenizer,
-    base_model: AutoModelForMaskedLM,
-    logistic_model: Union[TransformerLRClassifier, TransformerTriHeadLR],
-    sequence: str,
-    device: str = "cuda",
-    chunk_size: int = DEFAULT_CHUNK_SIZE,
-    stride_ratio: float = DEFAULT_STRIDE_RATIO,
-    step: int = 1000,
-    max_length: int = DEFAULT_MAX_LEN,
-) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[List[np.ndarray]], List[np.ndarray]]:
-    """
-    Given a list of sequences, chunk and embed them using a pretrained transformer,
-    then feed through the trained classifier to get final embeddings.
-    
-    Inputs:
-        tokenizer: Pretrained tokenizer for the base model
-        base_model: Pretrained base transformer model
-        logistic_model: Trained logistic model
-        sequences: List of input sequences (strings)
-        device: Device to run computations on ("cuda" or "cpu")
-        chunk_size: Size of each chunk for embedding
-        stride_ratio: Ratio of chunk size to use as stride
-        step: Step size for sliding window. Do not mistake for stride.
-        max_length: Maximum length of sequences to process.
-                    Longer sequences are chopped into `max_length` proceeding with `step`.
-    
-    Returns: np.ndarray of shape (len(sequences), output_dim)
-    
-    """
-    # Use tokenizer.model_max_length if available, otherwise fallback to provided max_length
-    model_max_length = getattr(tokenizer, "model_max_length", chunk_size)
-    chunk_size = min(chunk_size, model_max_length)
-    stride = int(chunk_size * stride_ratio)
-
-    all_cbl_logits, all_serotype_logits, all_genogroup_logits, all_embeddings = [], [], [], []
-    start_indices = [i for i in range(0, len(sequence), step) if i + max_length <= len(sequence)]
-    if not start_indices:
-        start_indices = [0]
-    
-    # Iterate over the sequence, embedding `max_length` sequences at a time, to get the most confidente prediction
-    for i in start_indices:
-        candidate = sequence[i:i + max_length]
-
-        # Chunk the sequence
-        chunks = chunk_sequence(candidate, chunk_size, stride)
-        if not chunks:
-            chunks = [candidate]
-        
-        # Get raw chunked embeddings from pre-trained transformer
-        pooled = embed_chunks(chunks, tokenizer, base_model, device, model_max_length)  # shape (L, D)
-
-        # Feed through the full logistic transformer model (like training pipeline)
-        with torch.no_grad():
-            inputs = pooled.unsqueeze(0).to(device)  # (1, L, D)
-            outputs = logistic_model(inputs)  # Full model forward pass
-
-        if isinstance(outputs[1], (list, tuple)) and len(outputs[1]) == 2:
-            cbl_logits, (serotype_logits, genogroup_logits), embedding = outputs
-            all_genogroup_logits.append(genogroup_logits.cpu().numpy())
-        else:
-            cbl_logits, serotype_logits, embedding = outputs
-            all_genogroup_logits = None
-
-        embedding_np = embedding.squeeze(0).cpu().numpy()  # (output_dim,)
-        all_cbl_logits.append(cbl_logits.cpu().numpy())
-        all_serotype_logits.append(serotype_logits.cpu().numpy())
-        all_embeddings.append(embedding_np)
-
-    return all_cbl_logits, all_serotype_logits, all_genogroup_logits, all_embeddings
+# ──────────────────────────────────────────────────────────────
+#  Main
+# ──────────────────────────────────────────────────────────────
 
 
 def main(args):
     device = args.device
-    chunk_size = args.model_params.get("chunk_size", DEFAULT_CHUNK_SIZE)
-    stride_ratio = args.model_params.get("stride_ratio", DEFAULT_STRIDE_RATIO)
-
     max_length = args.model_params.get("max_length", DEFAULT_MAX_LEN)
     rolling_step = args.model_params.get("rolling_step", DEFAULT_ROLLING_STEP)
-
     cbl_threshold = THRESH_CPS
 
-    # Prepare energy temperature and threshold (tau)
+    # Energy threshold
     resolved_temperature = float(args.energy_temperature)
-    tau_serotype: Optional[float] = percentiles_serotype.get(str(args.energy_percentile), None)
+    tau_serotype: Optional[float] = _PERCENTILES_SEROTYPE.get(
+        str(args.energy_percentile)
+    )
     assert tau_serotype is not None, "tau_serotype must be set"
-    # print(f"Loaded tau_serotype={tau_serotype:.6f} at T={resolved_temperature} from {args.energy_thresholds_json}")
 
-    # Set seeds for reproducibility
-    torch.manual_seed(42)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(42)
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
-    
+    set_deterministic_seeds()
+
+    # ── Load models via shared inference module ───────────────
+    base_kwargs: dict = {"model_name": args.base_model, "device": device}
+    if "chunk_size" in args.model_params:
+        base_kwargs["chunk_size"] = args.model_params["chunk_size"]
+    if "stride_ratio" in args.model_params:
+        base_kwargs["stride_ratio"] = args.model_params["stride_ratio"]
+
     print(f"Loading the {args.base_model} base model...")
-    tokenizer = AutoTokenizer.from_pretrained(args.base_model, trust_remote_code=True)
-    base_model = AutoModelForMaskedLM.from_pretrained(args.base_model, trust_remote_code=True).to(device)
-    base_model.eval()  # Set to eval mode for deterministic behavior
-    
+    base_bundle = load_base_model(**base_kwargs)
+
     print("Loading the transformer and logistic regression model...")
-    model_save_dict = torch.load(args.model_path, map_location=device)
-    model_config = model_save_dict['model_config']
-    idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
-    genogroup_to_idx = model_save_dict.get('genogroup_to_idx')
-    idx_to_genogroup = {v: k for k, v in genogroup_to_idx.items()} if genogroup_to_idx else None
-    
-    # Initialize model with saved configuration
-    logistic_model = ModelRegistry.get_model_class(args.head_model) \
-        .from_config(model_config) \
-        .to(device)
-    logistic_model.load_state_dict(model_save_dict['model_state_dict'])
-    logistic_model.eval()
-    
+    head_bundle = load_trained_model(args.model_path, device, args.head_model)
+    logistic_model = head_bundle.model
+    idx_to_serotype = head_bundle.idx_to_serotype
+    idx_to_genogroup = head_bundle.idx_to_genogroup
+
+    # Load OpenMax if provided
+    openmax_model: Optional[OpenMax] = None
+    if args.openmax_params and os.path.isfile(args.openmax_params):
+        print(f"Loading OpenMax parameters from {args.openmax_params}")
+        openmax_model = OpenMax.load(args.openmax_params)
+
+    # ── Process each query sequence ───────────────────────────
     print("Processing queries...")
-    results = dict()
+    results: dict = {}
     query_sequences = list(SeqIO.parse(args.query, "fasta"))
+
     for record in tqdm(query_sequences, desc="Processing queries"):
         print(f"Processing query: {record.id}...")
-        query_cbl_logits, query_serotype_logits, query_genogroup_logits, query_embedding = transformer_embedding(
-            tokenizer=tokenizer,
-            base_model=base_model,
-            logistic_model=logistic_model,
+
+        # Canonical embedding — single source of truth via inference.embed_sequence
+        cbl_list, sero_list, geno_list, z_list = embed_sequence(
+            base_bundle=base_bundle,
+            head_model=logistic_model,
             sequence=str(record.seq),
             device=device,
-            chunk_size=chunk_size,
-            stride_ratio=stride_ratio,
-            step=rolling_step,
             max_length=max_length,
+            inference_mode=args.inference_mode,
+            scan_step=rolling_step,
         )
 
-        # Select among candidate windows: keep those with is_capsule=True and pick highest serotype confidence
-        best_idx = None
-        best_conf = -np.inf
-        # Compute per-candidate serotype confidence; filter to capsulated
-        for idx in range(len(query_serotype_logits)):
-            cbl_vec = np.asarray(query_cbl_logits[idx]).squeeze()
-            sero_vec = np.asarray(query_serotype_logits[idx]).squeeze()
-            # Capsule decision for this candidate (consistent with existing logic)
-            cbl_probs = torch.sigmoid(torch.tensor(cbl_vec)).numpy()
-            is_capsulated = bool(cbl_probs[1] > cbl_threshold)
-            if not is_capsulated:
-                continue
-            # Serotype confidence = max softmax probability
-            sero_conf = float(torch.softmax(torch.tensor(sero_vec), dim=-1).max().item())
-            if sero_conf > best_conf:
-                best_conf = sero_conf
-                best_idx = idx
+        # ── Window aggregation ────────────────────────────────
+        n_windows = len(sero_list)
 
-        # Fallback: if no capsulated candidates, use highest serotype confidence overall
-        if best_idx is None:
-            for idx in range(len(query_serotype_logits)):
-                sero_vec = np.asarray(query_serotype_logits[idx]).squeeze()
-                sero_conf = float(torch.softmax(torch.tensor(sero_vec), dim=-1).max().item())
-                if sero_conf > best_conf:
-                    best_conf = sero_conf
-                    best_idx = idx
+        if n_windows == 1:
+            sel_cbl = np.asarray(cbl_list[0]).squeeze()
+            sel_sero = np.asarray(sero_list[0]).squeeze()
+            sel_geno = (
+                None
+                if geno_list is None
+                else np.asarray(geno_list[0]).squeeze()
+            )
+            sel_z = np.asarray(z_list[0])
+        else:
+            # Scan mode: mean-logit pooling over capsulated windows
+            capsulated = []
+            for wi in range(n_windows):
+                cbl_vec = np.asarray(cbl_list[wi]).squeeze()
+                cbl_probs = torch.softmax(
+                    torch.tensor(cbl_vec, dtype=torch.float32), dim=-1
+                ).numpy()
+                if cbl_probs[1] > cbl_threshold:
+                    capsulated.append(wi)
 
-        # Extract results for the selected candidate
-        assert best_idx is not None, f"No candidate window selected in {record.id}"
-        sel_cbl_logits = np.asarray(query_cbl_logits[best_idx]).squeeze()
-        sel_serotype_logits = np.asarray(query_serotype_logits[best_idx]).squeeze()
-        sel_genogroup_logits = None if query_genogroup_logits is None else np.asarray(query_genogroup_logits[best_idx]).squeeze()
-        sel_embedding = np.asarray(query_embedding[best_idx])
-        cbl_predictions = torch.sigmoid(torch.tensor(sel_cbl_logits)).numpy()
-        is_cbl = bool(cbl_predictions[1] > cbl_threshold)
+            use = capsulated if capsulated else list(range(n_windows))
 
-        # Serotype energy at configured temperature (novelty score)
-        e_sero = energy_score(sel_serotype_logits, temperature=resolved_temperature)
-        is_novel = bool(e_sero > tau_serotype)  # TODO should this also depend on is_cbl?
+            sel_cbl = np.mean(
+                [np.asarray(cbl_list[i]).squeeze() for i in use], axis=0
+            )
+            sel_sero = np.mean(
+                [np.asarray(sero_list[i]).squeeze() for i in use], axis=0
+            )
+            sel_geno = None
+            if geno_list is not None:
+                sel_geno = np.mean(
+                    [np.asarray(geno_list[i]).squeeze() for i in use], axis=0
+                )
+            sel_z = np.mean(
+                [np.asarray(z_list[i]) for i in use], axis=0
+            )
 
-        result_entry = {
-            "serotype_logits": sel_serotype_logits,
-            "embedding": sel_embedding,
+        # ── Predictions ───────────────────────────────────────
+        cbl_probs = torch.softmax(
+            torch.tensor(sel_cbl, dtype=torch.float32), dim=-1
+        ).numpy()
+        is_cbl = bool(cbl_probs[1] > cbl_threshold)
+
+        _, sero_conf, _ = softmax_predict(sel_sero, idx_to_serotype)
+
+        # Energy novelty
+        e_sero = energy_score(sel_sero, temperature=resolved_temperature)
+        is_novel_energy = bool(e_sero > tau_serotype)
+
+        # OpenMax novelty
+        openmax_pred = None
+        openmax_prob_unknown = None
+        is_novel_openmax = False
+        if openmax_model is not None:
+            om = openmax_model.openmax_score(sel_z, sel_sero)
+            openmax_pred = om["openmax_pred"]
+            openmax_prob_unknown = round(om["prob_unknown"], 6)
+            is_novel_openmax = om["is_novel"]
+
+        is_novel = is_novel_energy or is_novel_openmax
+
+        entry: dict = {
+            "serotype_logits": sel_sero,
+            "embedding": sel_z,
             "is_cbl": is_cbl,
             "is_novel_serogroup": is_novel,
-            "serotype_confidence": round(best_conf, 3),
+            "is_novel_energy": is_novel_energy,
+            "is_novel_openmax": is_novel_openmax,
+            "serotype_confidence": round(sero_conf, 3),
             "novelty_confidence": round(e_sero, 3),
         }
-        if sel_genogroup_logits is not None and idx_to_genogroup is not None:
-            result_entry["genogroup_logits"] = sel_genogroup_logits
-            result_entry["pred_genogroup"] = idx_to_genogroup[int(np.argmax(torch.softmax(torch.tensor(sel_genogroup_logits), dim=-1)).item())]
-        results[record.id] = result_entry
-    
-    results_df = pd.DataFrame.from_dict(results, orient='index')
+        if openmax_pred is not None:
+            entry["openmax_pred"] = openmax_pred
+            entry["openmax_prob_unknown"] = openmax_prob_unknown
+        if sel_geno is not None and idx_to_genogroup is not None:
+            geno_label, _, _ = softmax_predict(sel_geno, idx_to_genogroup)
+            entry["genogroup_logits"] = sel_geno
+            entry["pred_genogroup"] = geno_label
+
+        results[record.id] = entry
+
+    # ── Save results ──────────────────────────────────────────
+    results_df = pd.DataFrame.from_dict(results, orient="index")
     results_df["pred_argmax"] = results_df["serotype_logits"].apply(
-        lambda x: idx_to_serotype[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
+        lambda x: softmax_predict(x, idx_to_serotype)[0]
     )
+
     drop_cols = ["embedding", "serotype_logits"]
     if "genogroup_logits" in results_df.columns:
         results_df["pred_genogroup"] = results_df["genogroup_logits"].apply(
-            lambda x: idx_to_genogroup[np.argmax(torch.softmax(torch.tensor(x), dim=-1).numpy())]
+            lambda x: softmax_predict(x, idx_to_genogroup)[0]
         )
         drop_cols.append("genogroup_logits")
 
-    # Save query results
     os.makedirs(args.output_dir, exist_ok=True)
     np.savez_compressed(
         os.path.join(args.output_dir, "query_embeddings.npz"),
         record_ids=results_df.index.to_numpy(),
-        embeddings=np.stack(results_df["embedding"].values)
+        embeddings=np.stack(results_df["embedding"].values),
     )
-    results_df.drop(columns=drop_cols).to_csv(os.path.join(args.output_dir, "query_results.csv"))
+    results_df.drop(columns=drop_cols).to_csv(
+        os.path.join(args.output_dir, "query_results.csv")
+    )
+
+
+# ──────────────────────────────────────────────────────────────
+#  CLI
+# ──────────────────────────────────────────────────────────────
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Novel detection script.")
-    parser.add_argument("--output_dir", type=str, required=True,
-                        help="Directory to save the output files.")
-    parser.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"],
-                        help="Device to use for computation.")
-    parser.add_argument("--query", type=str, required=True,
-                        help="Path to the query FASTA file.")
-    parser.add_argument("--model_params", type=str, default="{}",
-                        help="JSON string of model parameters")
-    parser.add_argument("--base_model", type=str, default=DEFAULT_MODEL,
-                        help="Name of the base transformer model to use for initial inference.")
-    parser.add_argument("--head_model", type=str, default="transformer_lr_classifier",
-                        help="Name of the head model to use.")
-    parser.add_argument("--model_path", type=str, required=True,
-                        help="Path to the trained model.")
-    parser.add_argument("--energy_temperature", type=float, default=DEFAULT_ENERGY_TEMPERATURE,
-                        help="Temperature T for energy computation")
-    parser.add_argument("--energy_percentile", type=float, default=DEFAULT_ENERGY_PERCENTILE,
-                        help="Percentile (e.g., 99) over ID energies to set tau_serotype")
-    # parser.add_argument("--energy_thresholds_json", type=str, required=True,
-    #                     help="JSON file containing precomputed tau_serotype and temperature")
-    parser.add_argument("--query_mode", default="default", choices=["default", "fast"],
-                        help="Query processing mode. Default is 'default' which uses full model inference. "
-                             "Fast mode skips the alignment-based locus cutter. "
-                             "Faster runtime is possible by setting smaller values for stride_ratio.")
-    args = parser.parse_args()
-    
-    try:
-        args.model_params = json.loads(args.model_params)
-        if not isinstance(args.model_params, dict):
-            print("Model parameters should be a JSON object.")
-            args.model_params = {}
-    except json.JSONDecodeError:
-        print("Error parsing model parameters JSON string.")
-        args.model_params = {}
-    finally:
-        print("Model parameters:", args.model_params)
+    p = argparse.ArgumentParser(
+        description="Query processing via trihead serotyping model."
+    )
+    p.add_argument("--output_dir", type=str, required=True)
+    p.add_argument(
+        "--device", type=str, default="cuda", choices=["cuda", "cpu"]
+    )
+    p.add_argument(
+        "--query", type=str, required=True,
+        help="Path to the query FASTA file.",
+    )
+    p.add_argument("--model_params", type=str, default="{}")
+    p.add_argument("--base_model", type=str, default=DEFAULT_MODEL)
+    p.add_argument("--head_model", type=str, default="transformer_trihead_lr")
+    p.add_argument("--model_path", type=str, required=True)
+    p.add_argument(
+        "--energy_temperature",
+        type=float,
+        default=DEFAULT_ENERGY_TEMPERATURE,
+    )
+    p.add_argument(
+        "--energy_percentile",
+        type=float,
+        default=DEFAULT_ENERGY_PERCENTILE,
+    )
+    p.add_argument(
+        "--query_mode",
+        default="default",
+        choices=["default", "fast"],
+    )
+    p.add_argument(
+        "--inference_mode",
+        default="eval",
+        choices=["eval", "scan"],
+        help="'eval' matches training; 'scan' uses rolling window.",
+    )
+    p.add_argument(
+        "--openmax_params",
+        type=str,
+        default=None,
+        help="Path to fitted OpenMax .pkl for open-set recognition.",
+    )
 
+    args = p.parse_args()
+    args.model_params = parse_model_params_json(args.model_params)
     return args
 
 
