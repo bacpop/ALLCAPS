@@ -1,28 +1,32 @@
-# Comprehensive database from CBLs
-This analysis aims at accurate identification of serotypes based on capsular sequences.
+# Pipeline Overview
+This directory hosts the Snakemake workflow for embedding, training, evaluating, and querying pneumococcal capsular loci. See `Snakefile` for authoritative rule definitions.
 
-## Workflow Structure
-This directory contains a reproducible pipeline that:
+## Main Rules (ordered by dependency)
+1. **`locus_cutting`**: Cut CPS loci from raw assemblies using flanking genes; produces cleaned CBL and non-CBL contigs.
+2. **`infer_chunks_cbl` / `infer_chunks_noncbl`**: Generate base transformer embeddings for CBL and non-CBL contigs.
+3. **`labels_preprocessing`**: Clean and normalize metadata/labels.
+4. **`labels_postprocessing`**: Merge labels with embedding availability; apply skips and set serotype column.
+5. **`train_model`**: Train the transformer LR head (optionally hierarchical loss) on chunked embeddings.
+6. **`embed_chunks`**: Run inference to materialize embeddings/logits for downstream evaluation.
+7. **`visualize_embeddings`**: Produce t-SNE plot of embeddings.
+8. **`capsule_classification`**: Evaluate capsule/non-capsule performance.
+9. **`serotype_classification`**: Evaluate serotype performance and export reports/matrices.
+10. **`novel_detection`**: Energy-based novelty detection for query sequences (requires query inputs and thresholds).
+11. **LOO variants** (`train_model_loo`, `embed_chunks_loo`, `serotype_classification_loo`): repeat training/eval leaving one serotype out (only when `serotypes` is populated in config).
 
-The pipeline uses [Snakemake](https://snakemake.readthedocs.io/) to ensure each step only runs when necessary (based on file timestamps) and to provide a clear, modular workflow ([`./Snakefile`](./Snakefile)).
+## Running
+- From repo root: `snakemake --cores 4 --configfile config.yaml`
+- Dry run: `snakemake -n --configfile config.yaml`
+- Generate DAG: `snakemake --forceall --dag | dot -Tpdf > dag.pdf`
 
-1. **`locus_cutter`**: Extracts CPS sequences from the input FASTA file by aligning flanking genes.
-2. **`embed_transformer`**: Generates base embeddings using a pretrained Nucleotide Transformer model.
-3. **`kmer_sketch`**: Creates k-mer sketches from the input FASTA file for the baseline analysis.
-4. **`visualize_umap`**: Visualizes the base embeddings using UMAP, for a visual comparison with (8).
-5. **`train_contrastive`**: Trains a contrastive head on top of the frozen base embeddings.
-6. **`embed_contrastive`**: Transforms the base embeddings using the trained contrastive head.
-7. **`knn_inference`**: Performs k-Nearest Neighbors (kNN) inference on the contrastive embeddings and generates a report.
-8. **`visualize_embeddings`**: Visualizes the contrastive embeddings (using UMAP, t-SNE or PCA) and saves the plot.
-9. **`lda_analysis`**: Performs LDA and Random Forest classification on k-mer sketches and generates evaluation reports.
-10. **`stats_summary`**: Compares class-wise F1 distributions across analysis methods and generates a summary plot.
-11. **`calc_distances`**: Calculates pairwise distances among embeddings for further model fitting.
-12. **`novel_detection`**: Compares query pairwise distances from known serogroups distributions to report on its novelty.
+## Configuration Notes
+- Edit `config.yaml` (copy from `config.yaml.template`) to set paths for metadata, infiles, flanking genes, and results directory.
+- Set `label_column` to your serotype column name; add `skip_labels` to exclude problematic classes.
+- Populate `serotypes` when you want LOO targets; leave empty to skip LOO rules.
+- Adjust `model_o0ding dimensions.
 
-Each rule is designed to be modular and reproducible, ensuring efficient execution of the pipeline.
-
-### Workflow DAG
-
-The whole DAG of the rules in the workflow is visualized [here](dag.pdf).
-> The graph is generated using Graphviz by `snakemake --forceall --dag | dot -Tpdf > dag.pdf`
+## Placeholders / TODOs
+- Provide your own flanking gene FASTA (`locus_cutter_query`).
+- Provide a metadata table with `Is_capsule`, contig IDs, and serotype labels.
+- For query mode, supply `query_path` and either `energy_thresholds_json` or `id_energies_csv` in `config.yaml`.
 

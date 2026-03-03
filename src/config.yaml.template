@@ -1,6 +1,13 @@
 results_dir: "my_results"
 cbl_fasta: "data/cbl_sequences.fasta"
 noncbl_fasta: "data/noncbl_sequences.fasta"
+data_dir: "data"
+metadata: "data/monocle-metadata.tsv"
+infiles: "data/infiles.txt"
+locus_cutter_query: "data/dexB_aliA_ATCC700669.fasta"
+label_column: "ERR"
+skip_labels: []
+serotypes: []  # list of serotypes for LOO expansion
 labels: "data/labels.txt"
 flank: "data/dexB_aliA_ATCC700669.fasta"
 raw_files: "/data/fasta_paths.txt"
