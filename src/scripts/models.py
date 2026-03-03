@@ -11,6 +11,39 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset
 
 
+def _make_padding_mask(x: torch.Tensor) -> torch.Tensor:
+    """Detect all-zero (padding) positions BEFORE positional embedding.
+
+    Args:
+        x: (B, L, D) raw chunk embeddings from the base model.
+    Returns:
+        (B, L) boolean mask — ``True`` for padded (all-zero) positions.
+    """
+    return x.abs().sum(dim=-1) == 0  # (B, L)
+
+
+def _masked_mean_pool(
+    x: torch.Tensor, padding_mask: torch.Tensor
+) -> torch.Tensor:
+    """Mean-pool over non-padding positions only.
+
+    This fixes a consistency issue where ``collate_fn`` zero-pads shorter
+    chunk sequences, but ``x.mean(dim=1)`` was averaging over all
+    positions (including padding zeros), diluting the representation.
+    Single-sample inference (query pipeline) had no padding and thus
+    produced different pooled values for the same sample.
+
+    Args:
+        x: (B, L, D) encoded sequence (post-encoder).
+        padding_mask: (B, L) boolean — ``True`` for padded positions.
+    Returns:
+        (B, D) mean-pooled tensor.
+    """
+    real = (~padding_mask).float().unsqueeze(-1)  # (B, L, 1)
+    lengths = real.sum(dim=1).clamp(min=1)          # (B, 1)
+    return (x * real).sum(dim=1) / lengths           # (B, D)
+
+
 # Model Registry
 class ModelRegistry:
     """Registry for model classes with factory pattern."""
@@ -219,10 +252,11 @@ class TransformerContrastiveHead(BaseModel):
 
     def forward(self, x):
         B, L, D = x.size()
+        padding_mask = _make_padding_mask(x)  # (B, L)
         pos = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
         x = x + self.pos_embed(pos)
-        x = self.encoder(x)  # Encoded (B, L, D)
-        x = x.mean(dim=1)  # Pooled (B, D)
+        x = self.encoder(x, src_key_padding_mask=padding_mask)
+        x = _masked_mean_pool(x, padding_mask)
         z = F.normalize(self.project(x), dim=1)
         logits = self.cbl_classifier(z)  # Classifier output (B, output_dim)
         return logits, z
@@ -252,10 +286,11 @@ class TransformerLRClassifier(BaseModel):
 
     def forward(self, x):
         B, L, D = x.size()
+        padding_mask = _make_padding_mask(x)  # (B, L)
         pos = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
         x = x + self.pos_embed(pos)
-        x = self.encoder(x)  # Encoded (B, L, D)
-        x = x.mean(dim=1)  # Pooled (B, D)
+        x = self.encoder(x, src_key_padding_mask=padding_mask)
+        x = _masked_mean_pool(x, padding_mask)
         z = F.normalize(self.project(x), dim=1)
         logits = self.cbl_classifier(z)  # Classifier output (B, output_dim)
         serotype_logits = self.serotype_classifier(z)
@@ -289,10 +324,11 @@ class TransformerTriHeadLR(BaseModel):
 
     def forward(self, x):
         B, L, D = x.size()
+        padding_mask = _make_padding_mask(x)  # (B, L)
         pos = torch.arange(L, device=x.device).unsqueeze(0)  # (1, L)
         x = x + self.pos_embed(pos)
-        x = self.encoder(x)  # Encoded (B, L, D)
-        x = x.mean(dim=1)  # Pooled (B, D)
+        x = self.encoder(x, src_key_padding_mask=padding_mask)
+        x = _masked_mean_pool(x, padding_mask)
         z = F.normalize(self.project(x), dim=1)
         logits = self.cbl_classifier(z)  # Classifier output (B, output_dim)
         serotype_logits = self.serotype_classifier(z)
