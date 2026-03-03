@@ -13,19 +13,20 @@ from pathlib import Path
 from .consts import NON_TYPEABLE, DEFAULT_LABEL_COLUMN
 
 
-def read_monocle_metadata(file_path):
+def read_monocle_metadata(file_path, label_column=DEFAULT_LABEL_COLUMN):
     """
     Reads the monocle metadata TSV file into a pandas DataFrame.
 
     Args:
         file_path: Path to the TSV file
+        label_column: Name of the column to use for serotype labels
 
     Returns:
         pandas DataFrame with metadata
     """
-    selected_columns = ["Sample_name", "Public_name", "Lane_id", "ERR", "In_silico_serotype"]
+    selected_columns = ["Sample_name", "ERR", "In_silico_serotype"]
     df = pd.read_csv(file_path)[selected_columns]
-    df = df.rename(columns={"In_silico_serotype": DEFAULT_LABEL_COLUMN})
+    df = df.rename(columns={"In_silico_serotype": label_column})
     return df
 
 

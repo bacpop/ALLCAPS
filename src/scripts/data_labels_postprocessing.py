@@ -9,7 +9,7 @@ import pandas as pd
 import argparse
 from pathlib import Path
 
-from .consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP
+from .consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP, DEFAULT_LABEL_COLUMN
 
 
 def main():
@@ -17,9 +17,9 @@ def main():
         description="Incorporate cleaned serotype labels and contig IDs into final metadata",
     )
     parser.add_argument("--clean_labels", required=True, help="Path to cleaned labels TSV file")
-    parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
     parser.add_argument("--output_dir", required=True, help="Path for output files")
-    parser.add_argument("--label_column", type=str, default="ERR", help="Column name for sample IDs in labels file")
+    parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
+    parser.add_argument("--label_column", type=str, default=DEFAULT_LABEL_COLUMN, help="Column name for sample IDs in labels file")
 
     args = parser.parse_args()
     try:
