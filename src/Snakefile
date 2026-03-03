@@ -1,3 +1,8 @@
+import sys, os
+sys.path.append(os.path.join(os.path.dirname(__file__), "scripts"))
+
+from consts import *
+
 configfile: "config.yaml"
 RESULTS_DIR = config["results_dir"]
 
@@ -17,15 +22,21 @@ SEROTYPES = config["serotypes"]
 
 rule all:
     input:
+        # Data preprocessing outputs
+        f"{config["data_dir"]}/contigs_cleaned.fasta",
+        f"{config["data_dir"]}/contigs_noncbl_cleaned.fasta",
+        # Embedding inference outputs
+        # f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl/.complete",
+        # Labels processing outputs
+        f"{RESULTS_DIR}/cleaned_labels.csv",
+        f"{RESULTS_DIR}/final_metadata.tsv",
         # Embedding directories
         f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
         f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
         # Model and processing outputs
-        f"{RESULTS_DIR}/final_metadata.tsv",
         f"{RESULTS_DIR}/transformer_model.pth",
         f"{RESULTS_DIR}/inference_results.npz",
         # Visualization and analysis outputs
-        f"{RESULTS_DIR}/tsne_visualization.pdf",
         f"{RESULTS_DIR}/cbl_results.txt",
         f"{RESULTS_DIR}/serotype_predictions.txt",
         f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
@@ -33,6 +44,8 @@ rule all:
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
         # Novel detection outputs
         f"{RESULTS_DIR}/query_results.csv",
+        # OpenMax calibration
+        f"{RESULTS_DIR}/openmax_params.pkl",
         # LOO targets (one set per held-out serotype)
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/classification_report.txt", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/confusion_matrix_df.csv", heldout=SEROTYPES),
@@ -53,15 +66,15 @@ rule locus_cutting:
         f"{params.outpref}_noncbl_cleaned.fasta"
     shell:
         """
-        python scripts/data_locus_cutter.py \
+        python -m scripts.data_locus_cutter \
             --infiles {input.infiles} \
             --cutoff {params.cutoff} \
             --query {params.query} \
             --outpref {params.outpref} \
             --max_extension {params.max_extension} \
             --save-noncbl
-        python scripts/tmp_fasta_contig_cleaner.py {params.outpref}.fasta
-        python scripts/tmp_fasta_contig_cleaner.py {params.outpref}_noncbl.fasta
+        python -m scripts.tmp_fasta_contig_cleaner.py {params.outpref}.fasta
+        python -m scripts.tmp_fasta_contig_cleaner.py {params.outpref}_noncbl.fasta
         """
 
 rule infer_chunks_cbl:
@@ -70,19 +83,21 @@ rule infer_chunks_cbl:
     output:
         directory(f"{RESULTS_DIR}/base_embeddings_chunked/cbl")
     params:
-        base_model=config["base_model"],
-        device=config["device"],
-        chunk_size=config["chunk_size"],
-        stride_ratio=config["stride_ratio"]
+        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
+        device=config.get("device", "cuda"),
+        chunk_size=config.get("chunk_size", 4000),
+        stride_ratio=config.get("stride_ratio", 0.5),
+        seq_max_len=config.get("seq_max_len", 30_000)
     shell:
         """
-        python scripts/embed_transformer.py \
+        python -m scripts.embed_transformer \
             --fasta {input.fasta} \
             --out_dir {output} \
+            --device {params.device} \
             --model_name {params.base_model} \
             --chunk_size {params.chunk_size} \
             --stride_ratio {params.stride_ratio} \
-            --device {params.device}
+            --seq_max_len {params.seq_max_len}
         """
 
 rule infer_chunks_noncbl:
@@ -91,19 +106,21 @@ rule infer_chunks_noncbl:
     output:
         directory(f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl")
     params:
-        base_model=config["base_model"],
-        device=config["device"],
-        chunk_size=config["chunk_size"],
-        stride_ratio=config["stride_ratio"]
+        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
+        device=config.get("device", "cuda"),
+        chunk_size=config.get("chunk_size", 4000),
+        stride_ratio=config.get("stride_ratio", 0.5),
+        seq_max_len=config.get("seq_max_len", 30_000)
     shell:
         """
-        python scripts/embed_transformer.py \
+        python -m scripts.embed_transformer \
             --fasta {input.fasta} \
             --out_dir {output} \
+            --device {params.device} \
             --model_name {params.base_model} \
             --chunk_size {params.chunk_size} \
             --stride_ratio {params.stride_ratio} \
-            --device {params.device}
+            --seq_max_len {params.seq_max_len}
         """
 
 rule labels_preprocessing:
@@ -113,7 +130,7 @@ rule labels_preprocessing:
         f"{RESULTS_DIR}/cleaned_labels.csv"
     shell:
         """
-        python scripts/data_labels_preprocessing.py \
+        python -m scripts.data_labels_preprocessing \
             --metadata {input} \
             --output_dir {RESULTS_DIR}
         """
@@ -125,12 +142,12 @@ rule labels_postprocessing:
         noncbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
     params:
         skip_labels=",".join(config.get("skip_labels", [])),
-        label_column=config.get("label_column", "ERR")
+        label_column=config.get("label_column", "Serotype")
     output:
         f"{RESULTS_DIR}/final_metadata.tsv"
     shell:
         """
-        python scripts/data_labels_postprocessing.py \
+        python -m scripts.data_labels_postprocessing \
             --clean_labels {input.labels} \
             --output_dir {RESULTS_DIR} \
             --skip_labels {params.skip_labels} \
@@ -147,10 +164,11 @@ rule train_model:
         device=config["device"],
         epochs=config["epochs"],
         batch_size=config["batch_size"],
-        lr=config["lr"]
+        lr=config["lr"],
+        model_params=config["model_params"]
     shell:
         """
-        python scripts/train_transformer.py \
+        python -m scripts.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -158,7 +176,7 @@ rule train_model:
             --epochs {params.epochs} \
             --batch_size {params.batch_size} \
             --lr {params.lr} \
-            --model_params '{config[model_params]}' \
+            --model_params '{params.model_params}' \
             --labeled_only \
             --hierarchical_loss
         """
@@ -176,7 +194,7 @@ rule embed_chunks:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/infer_transformer.py \
+        python -m scripts.trihead.infer_trihead_transformer \
             --embeddings_dir {input.embeddings} \
             --labels {input.labels} \
             --model {input.model} \
@@ -195,7 +213,7 @@ rule visualize_embeddings:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
         """
-        python scripts/eval_visualize_embeddings.py \
+        python -m scripts.eval_visualize_embeddings \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
@@ -214,7 +232,7 @@ rule capsule_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/eval_cbl_classifier.py \
+        python -m scripts.eval_cbl_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --output {output} \
@@ -239,7 +257,7 @@ rule serotype_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/eval_serotype_classifier.py \
+        python -m scripts.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -266,7 +284,7 @@ rule train_model_loo:
     # resources: gpu=1, mem_mb=32000  # optionally control resources
     shell:
         """
-        python scripts/train_transformer.py \
+        python -m scripts.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --output {output} \
@@ -277,7 +295,7 @@ rule train_model_loo:
             --model_params '{params.model_params}' \
             --labeled_only \
             --hierarchical_loss \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
 rule embed_chunks_loo:
@@ -295,7 +313,7 @@ rule embed_chunks_loo:
     # resources: gpu=1, mem_mb=16000
     shell:
         """
-        python scripts/infer_transformer.py \
+        python -m scripts.trihead.infer_trihead_transformer \
             --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
@@ -304,7 +322,7 @@ rule embed_chunks_loo:
             --batch_size {params.batch_size} \
             --model_params '{params.model_params}' \
             --labeled_only \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
 rule serotype_classification_loo:
@@ -325,7 +343,7 @@ rule serotype_classification_loo:
     # resources: gpu=1, mem_mb=8000
     shell:
         """
-        python scripts/eval_serotype_classifier.py \
+        python -m scripts.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -333,33 +351,76 @@ rule serotype_classification_loo:
             --device {params.device} \
             --batch_size {params.batch_size} \
             --model_params '{params.model_params}' \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
-rule sequence_sampler:
-    """Placeholder for future implementation. It will extract all the sequences from the query fasta from a specific serotype to use as query in novel detection script"""
-    pass
+# rule sequence_sampler:
+#     """Placeholder for future implementation. It will extract all the sequences from the query fasta from a specific serotype to use as query in novel detection script"""
+#     pass
 
 rule novel_detection:
     input:
         labels=f"{RESULTS_DIR}/final_metadata.tsv",
         trained_model=f"{RESULTS_DIR}/transformer_model.pth",
+        openmax_params=f"{RESULTS_DIR}/openmax_params.pkl",
     params:
         query=config["query_path"],
         model_params=config["model_params"],
         base_model=config["base_model"],
-        head_model="transformer_lr_classifier",  # Hardcoded for now
-        # thresholds=config["novelty_thresholds"],
+        head_model="transformer_trihead_lr",
     output:
         f"{RESULTS_DIR}/query_results.csv",
     shell:
         """
-        python scripts/novel_detection.py \
+        python -m scripts.trihead.process_trihead_query \
             --query {params.query} \
-            --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
             --base_model {params.base_model} \
             --head_model {params.head_model} \
+            --model_path {input.trained_model} \
             --model_params '{params.model_params}' \
+            --inference_mode eval \
+            --openmax_params {input.openmax_params}
         """
-            # --thresholds {params.thresholds} \
+
+rule openmax_calibration:
+    """Fit OpenMax parameters on the training set's projected embeddings."""
+    input:
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        model=f"{RESULTS_DIR}/transformer_model.pth",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+    output:
+        f"{RESULTS_DIR}/openmax_params.pkl",
+    params:
+        device=config["device"],
+        model_params=config["model_params"],
+    shell:
+        """
+        python -m scripts.openmax fit \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --model {input.model} \
+            --output {output} \
+            --device {params.device}
+        """
+
+rule openmax_calibration_loo:
+    """For each held-out serotype, fit OpenMax on the remaining serotypes — 
+    enables evaluation of whether OpenMax correctly rejects the held-out serotype."""
+    input:
+        embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
+        model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
+        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+    output:
+        f"{RESULTS_DIR}/loo/{{heldout}}/openmax_params.pkl",
+    params:
+        device=config["device"],
+    shell:
+        """
+        python -m scripts.openmax fit \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --model {input.model} \
+            --output {output} \
+            --device {params.device}
+        """
