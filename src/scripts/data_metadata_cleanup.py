@@ -44,7 +44,7 @@ def main():
     output_path = Path(args.output_dir)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    names = [f.split(".")[0] for f in os.listdir(output_path / "base_embeddings_chunked") if f.endswith(".npy")]
+    names = [f.split(".")[0] for f in os.listdir(output_path.parent / "base_embeddings_chunked") if f.endswith(".npy")]
     assert names, "The base_embeddings_chunked directory is empty"
     labels["file_name"] = labels["Public_ID"].astype(str) + CONTIG_SEP + labels["Contig_ID"].astype(str)
     missing = set(names) - set(labels["file_name"])

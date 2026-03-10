@@ -20,7 +20,7 @@ from .utils import map_serotype_to_group
 DEFAULT_ID_COLUMN = "Public_ID"
 DEFAULT_CONTIG_COLUMN = "Contig_ID"
 DEFAULT_PRED_COLUMN = "pred_argmax"
-DEFAULT_GENOGROUP_COLUMN = "Genogroup"
+DEFAULT_GENOGROUP_COLUMN = "pred_genogroup"
 
 
 def _read_table(path: str) -> pd.DataFrame:
@@ -225,13 +225,3 @@ if __name__ == "__main__":
 	parser.add_argument("--genogroup_column", default=DEFAULT_GENOGROUP_COLUMN, help="Genogroup column name")
 
 	main(parser.parse_args())
-
-"""
-example command:
-python -m scripts.eval_test_performance \
-    --query_results /Users/alireza/Downloads/ebi_temp/query_results.csv \
-    --metadata /Users/alireza/Downloads/ebi_temp/test_metadata.csv \
-    --output_dir /Users/alireza/Downloads/ebi_temp \
-    --pred_column pred_argmax
-"""
-

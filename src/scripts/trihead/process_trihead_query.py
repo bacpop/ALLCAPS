@@ -17,7 +17,8 @@ Usage::
         --query query.fasta \\
         --model_path results/transformer_model.pth \\
         --output_dir results/ \\
-        --inference_mode eval
+        --inference_mode eval \\
+        --openmax_params results/openmax_params.pkl
 """
 
 import argparse
@@ -93,7 +94,9 @@ def main(args):
 
     # Load OpenMax if provided
     openmax_model: Optional[OpenMax] = None
-    if args.openmax_params and os.path.isfile(args.openmax_params):
+    if args.openmax_params:
+        if not os.path.isfile(args.openmax_params):
+            raise FileNotFoundError(f"OpenMax parameters file not found: {args.openmax_params}")
         print(f"Loading OpenMax parameters from {args.openmax_params}")
         openmax_model = OpenMax.load(args.openmax_params)
 

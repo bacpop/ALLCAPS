@@ -17,8 +17,7 @@ classes, enabling a principled "unknown" probability.
 
 Usage:
   # Fit (calibrate):
-  python -m scripts.openmax \
-      --fit \
+  python -m scripts.openmax fit \
       --embeddings results/inference_results.npz \
       --labels results/final_metadata.tsv \
       --model results/transformer_model.pth \
@@ -26,8 +25,7 @@ Usage:
       --device cpu
 
   # Predict:
-  python -m scripts.openmax \
-      --predict \
+  python -m scripts.openmax predict \
       --embeddings results/inference_results.npz \
       --labels results/final_metadata.tsv \
       --model results/transformer_model.pth \
@@ -335,7 +333,7 @@ def cli_fit(args):
 
     # Load embeddings + labels
     X = np.load(args.embeddings, allow_pickle=True)
-    labels_df = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels_df = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
     labels_df["Serotype"] = labels_df["Serotype"].fillna(DEFAULT_MISSING_LABEL)
     labels_df = labels_df[labels_df["Serotype"] != DEFAULT_MISSING_LABEL]
     # Only capsulated samples for serotype
