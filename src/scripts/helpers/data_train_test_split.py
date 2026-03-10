@@ -16,6 +16,7 @@ from Bio import SeqIO
 from sklearn.model_selection import train_test_split
 
 from ..consts import DEFAULT_LABEL_COLUMN, RND_STATE, TRAIN_SPLIT_RATIO, CONTIG_SEP
+from ..data_labels_preprocessing import cleanup_serotype
 DEFAULT_ID_COLUMN = "Public_ID"
 DEFAULT_CONTIG_COLUMN = "Contig_ID"
 
@@ -85,6 +86,11 @@ def split_one(
 
     # Stratified split on serotype; handle rare classes
     serotypes = meta[serotype_column] if serotype_column in meta.columns else None
+    if serotypes is not None:
+        # Apply the same label-cleaning used during training so that
+        # train/test splits are based on consistent, canonical labels.
+        serotypes = serotypes.map(cleanup_serotype)
+        meta[serotype_column] = serotypes
     idx_all = np.arange(len(records))
 
     if serotypes is None:

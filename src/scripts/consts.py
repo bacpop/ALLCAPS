@@ -26,6 +26,10 @@ DEFAULT_COMPONENTS = 5
 DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
 DEFAULT_CV = 5  # Number of cross-validation folds
 
+# Label taxonomy
+MIN_SEROTYPE_COUNT = 5  # Min samples per serotype to keep as a resolved class
+SEROGROUP_LABELS = frozenset({"Serogroup 24", "Serogroup 33"})  # Serogroup-level labels
+
 # Inference
 DEFAULT_MODEL = "neuralbioinfo/prokbert-mini-long"
 DEFAULT_HEAD_MODEL = "transformer_trihead_lr"

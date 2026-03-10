@@ -7,88 +7,133 @@ import numpy as np
 from typing import Tuple
 import pandas as pd
 
-from .consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL
+from .consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL, SEROGROUP_LABELS
 EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of
-# similar groupings, i.e. genogroups or serogroups. We use it
-# for contrastive training and visualization purposes.
+# CPS-locus-based genogroups.  References:
+#   - Epping et al. 2018 (SeroBA), Table S1
+#   - Kapatai et al. 2022 (PneumoCaT2), Table 1
+#   - Bentley et al. 2006
+# We use this for contrastive training and visualization purposes.
 SEROTYPE_GROUPS = {
+    # --- Serogroup 6 (single genogroup) ---
     "6A": "6",
     "6B": "6",
     "6C": "6",
     "6D": "6",
+    "6E": "6",
     "6E(6B)": "6",
+    # --- Serogroup 7 ---
     "7B": "7B_7C_40",
     "7C": "7B_7C_40",
     "7A": "7A_7F",
     "7F": "7A_7F",
-    "9A": "9",
-    "9L": "9",
-    "9N": "9",
-    "9V": "9",
-    "10A": "10",
-    "10B": "10",
-    "10C": "10",
-    "10F": "10",
+    # --- Serogroup 9: two genogroups (9A/9V vs 9L/9N) ---
+    "9A": "9A_9V",
+    "9V": "9A_9V",
+    "9L": "9L_9N",
+    "9N": "9L_9N",
+    # --- Serogroup 10: 10A/10B/10C form one genogroup; 10F is distinct ---
+    "10A": "10A_10B_10C",
+    "10B": "10A_10B_10C",
+    "10C": "10A_10B_10C",
+    "10F": "10F",
     "10X": "33G",
-    "11A": "11",
-    "11B": "11",
-    "11C": "11",
-    "11D": "11",
-    "11E": "11",
+    # --- Serogroup 11: 11A(/11D) vs 11B/11C vs 11E ---
+    "11A": "11A_11D",
+    "11D": "11A_11D",
+    "11B": "11B_11C",
+    "11C": "11B_11C",
+    "11E": "11E",
+    # --- Serogroup 12 / 44 / 46 ---
     "12A": "12_44_46",
     "12B": "12_44_46",
     "12F": "12_44_46",
-    "15A": "15",
-    "15B": "15",
-    "15C": "15",
-    "15B/15C": "15",
-    "15F": "15",
-    "18A": "18",
-    "18B": "18",
-    "18C": "18",
-    "18F": "18",
+    # --- Serogroup 15: three distinct CPS loci ---
+    "15A": "15A",
+    "15B": "15B_15C",
+    "15C": "15B_15C",
+    "15B/15C": "15B_15C",
+    "15F": "15F",
+    # --- Serogroup 18: 18A is distinct from 18B/18C/18F ---
+    "18A": "18A",
+    "18B": "18B_18C_18F",
+    "18C": "18B_18C_18F",
+    "18F": "18B_18C_18F",
+    # --- Serogroup 19 ---
     "19A": "19A",
     "19B": "19B_19C",
     "19F": "19F",
+    # --- Serogroup 20 ---
     "20": "20",
     "20A": "20",
     "20B": "20",
     "20C": "20",
+    # --- Serogroup 22 ---
     "22A": "22",
     "22F": "22",
+    # --- Serogroup 23 ---
     "23A": "23",
     "23B": "23",
     "23B1": "23",
     "23F": "23",
+    # --- Serogroup 24 ---
+    "24": "Serogroup 24",
     "24A": "Serogroup 24",
     "24B": "Serogroup 24",
     "24F": "Serogroup 24",
+    # --- Serogroup 25 / 38 ---
     "25A": "25A_25F_38",
     "25F": "25A_25F_38",
+    # --- Serogroup 28 ---
     "28A": "28",
     "28F": "28",
+    # --- Serogroup 32 ---
     "32F": "32",
+    # --- Serogroup 33 ---
+    "33": "Serogroup 33",
     "33A": "33A_33F_37",
     "33A/33F": "33A_33F_37",
     "33B": "33B_33D",
     "33D": "33B_33D",
     "33F": "33A_33F_37",
+    # --- Serogroup 35 ---
     "35A/42": "35A_35C_42",
     "35A": "35A_35C_42",
     "35B": "35B_35D",
     "35B/35D": "35B_35D",
     "35C": "35A_35C_42",
     "35D": "35B_35D",
+    # ---
     "37": "33A_33F_37",
     "38": "25A_25F_38",
     "39X": "10D",
     "40": "7B_7C_40",
     "42": "35A_35C_42",
-    "46": "12_44_46"
+    "46": "12_44_46",
+    # Explicit entries for serogroup-level labels
+    "Serogroup 24": "Serogroup 24",
+    "Serogroup 33": "Serogroup 33",
 }
 WHITELIST = ["NON-CBL"]
+
+def classify_label_type(label: str) -> str:
+    """Classify a serotype label as 'serotype', 'serogroup_only', or 'compound'.
+
+    - 'serogroup_only': The label is in SEROGROUP_LABELS (e.g. "Serogroup 24").
+      These samples should NOT contribute to the serotype CE loss.
+    - 'compound': The label contains '/' and is a key in SEROTYPE_GROUPS
+      (e.g. "15B/15C", "33A/33F"). Cannot be resolved to a single serotype.
+      These should also NOT contribute to the serotype CE loss.
+    - 'serotype': A resolved, unambiguous serotype (e.g. "6A", "19F").
+    """
+    if label in SEROGROUP_LABELS:
+        return "serogroup_only"
+    if "/" in label:
+        return "compound"
+    return "serotype"
+
 
 def map_serotype_to_group(serotype):
     """ Map serotype to a more coarse label by
@@ -192,6 +237,9 @@ def collate_fn(batch):
     embeddings = [item['embedding'] for item in batch]  # [(L_i, D), ...]
     serotypes = [item['serotype'] for item in batch]
     is_capsule = torch.tensor([item['is_capsule'] for item in batch], dtype=torch.long)
+    serotype_known = torch.tensor(
+        [item.get('serotype_known', True) for item in batch], dtype=torch.bool
+    )
 
     padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
 
@@ -199,7 +247,8 @@ def collate_fn(batch):
         'sample_id': [item['sample_id'] for item in batch],  # list[str]
         'embedding': padded_embeddings,   # tensor [B, L_max, D]
         'serotype': serotypes,            # list[str]
-        'is_capsule': is_capsule          # tensor [B]
+        'is_capsule': is_capsule,         # tensor [B]
+        'serotype_known': serotype_known  # tensor [B] (bool)
     }
 
 def chunk_sequence(seq, chunk_size=512, stride=256):

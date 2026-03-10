@@ -148,6 +148,17 @@ def main(args):
         else:
             labels_df_eval = labels_df.copy()
         
+        # Skip samples whose true label is not a resolved serotype class
+        # (e.g. serogroup-only labels like "Serogroup 24" or compound labels)
+        known_mask = np.array([lbl in serotype_to_idx for lbl in y_true])
+        if not known_mask.all():
+            n_dropped = (~known_mask).sum()
+            dropped_labels = sorted(set(y_true[~known_mask]))
+            print(f"Removing {n_dropped} samples with true labels not in serotype_to_idx: {dropped_labels}")
+            y_true = y_true[known_mask]
+            y_pred = y_pred[known_mask]
+            labels_df_eval = labels_df_eval[known_mask].copy()
+        
         if len(y_true) == 0:
             print("No samples with valid true labels found for evaluation.")
             return

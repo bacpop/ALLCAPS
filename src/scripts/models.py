@@ -159,15 +159,17 @@ class ContrastiveHead(BaseModel):
 
 @register_dataset("contrastive_chunked")
 class ContrastiveChunkedDataset(Dataset):
-    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels):
+    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels, serotype_known=None):
         """
         embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
         serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
+        serotype_known: optional array-like of bool, True if the serotype is resolved (not serogroup/compound).
         """
         self.embedding_dir = embeddings_dir
         self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
         self.sample_ids = sample_ids
+        self.serotype_known = serotype_known if serotype_known is not None else [True] * len(sample_ids)
 
         # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
@@ -189,21 +191,24 @@ class ContrastiveChunkedDataset(Dataset):
             'sample_id': self.sample_ids[idx],
             'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
             'serotype': self.serotypes[idx],
-            'is_capsule': self.is_capsule[idx]
+            'is_capsule': self.is_capsule[idx],
+            'serotype_known': self.serotype_known[idx]
         }
 
 
 @register_dataset("multidomain_chunked")
 class MultidomainChunkedDataset(Dataset):
-    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels):
+    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels, serotype_known=None):
         """
         embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
         serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
+        serotype_known: optional array-like of bool, True if the serotype is resolved (not serogroup/compound).
         """
         self.embedding_dir = embeddings_dir
         self.serotypes = serotype_labels
         self.is_capsule = capsule_labels 
         self.sample_ids = sample_ids
+        self.serotype_known = serotype_known if serotype_known is not None else [True] * len(sample_ids)
 
         # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "*.npy"))
@@ -225,7 +230,8 @@ class MultidomainChunkedDataset(Dataset):
             'sample_id': self.sample_ids[idx],
             'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
             'serotype': self.serotypes[idx],
-            'is_capsule': self.is_capsule[idx]
+            'is_capsule': self.is_capsule[idx],
+            'serotype_known': self.serotype_known[idx]
         }
 
 
