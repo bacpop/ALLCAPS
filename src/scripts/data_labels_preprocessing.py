@@ -62,12 +62,12 @@ def cleanup_serotype(value):
         '24B/24C/24F': "Serogroup 24",
         '33A/33E/33F': "Serogroup 33",
         '33F(33F-1B)': "33F",
-        '33F(33F-1B)': "33F",
         'POSSIBLE 6A': "6A",
         'POSSIBLE 6C': "6C",
         'POSSIBLE 6D': "6D",
         'POSSIBLE 6E': "6E",
         "SEROGROUP 24": "Serogroup 24",
+        "SEROGROUP 33": "Serogroup 33",
         "24": "Serogroup 24",  # <-- TODO rename "24"s to "24F"?
         "33": "Serogroup 33",  # <-- TODO rename "33"s to "33F"?
         # "24A": "Serogroup 24",
@@ -76,7 +76,10 @@ def cleanup_serotype(value):
         # '35B/35D': "?",
     }
 
+    WHITELIST = ["NON-CBL"]
+
     untypables = [
+        "NON-TYPEABLE",
         "NT",
         "SWISS_NT",
         "UNTYPABLE",
@@ -84,8 +87,10 @@ def cleanup_serotype(value):
         "ALTERNATIVE_ALIB_NT",
         "SEROBA FAILURE",
         "NCC2_ALIC_ALID_NON_ENCAPSULATED",
-        "Non-typeable/NCC2a",
+        "NON-TYPEABLE/NCC2A",
     ]
+
+    value = value.strip().upper()
 
     if pd.isna(value):
         return NON_TYPEABLE
@@ -96,8 +101,9 @@ def cleanup_serotype(value):
 
     if value in untypables:
         return NON_TYPEABLE
-
-    value = value.strip().upper()
+    
+    if value in WHITELIST:
+        return value
 
     # Replace incorrect formats like "06B" with "6B"
     value = re.sub(r"^0+(\d+)", r"\1", value)
@@ -105,6 +111,7 @@ def cleanup_serotype(value):
     # Handle specific typos and corrections
     typo_corrections = {
         "18C/19F": ["18C/19F"],
+        "15B/C": ["15B/15C"],
         # Add more corrections as needed
     }
 
