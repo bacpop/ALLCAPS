@@ -1,22 +1,29 @@
 """Split paired FASTA and metadata files into train/test sets.
 
-Takes lists of FASTA paths and matching metadata CSV paths (one-to-one).
-Applies either a single train ratio to all, or per-file ratios via a
-comma-separated list. Outputs combined train/test FASTA and metadata
-CSV files in the specified output directory.
+Pools all sources, applies unified label preprocessing, then performs
+stratified train/test splitting with per-source ratios.  Serotypes that
+are globally too rare are placed entirely in the training set, ensuring
+every label in the test set also appears in training.
 """
 
 import argparse
 import os
-from typing import List, Sequence
+from typing import List
 
 import numpy as np
 import pandas as pd
 from Bio import SeqIO
 from sklearn.model_selection import train_test_split
 
-from ..consts import DEFAULT_LABEL_COLUMN, RND_STATE, TRAIN_SPLIT_RATIO, CONTIG_SEP
-from ..data_labels_preprocessing import cleanup_serotype
+from ..consts import (
+    CONTIG_SEP,
+    DEFAULT_LABEL_COLUMN,
+    MIN_SEROTYPE_COUNT,
+    RND_STATE,
+    TRAIN_SPLIT_RATIO,
+)
+from ..data_labels_preprocessing import preprocess_metadata
+
 DEFAULT_ID_COLUMN = "Public_ID"
 DEFAULT_CONTIG_COLUMN = "Contig_ID"
 
@@ -50,124 +57,163 @@ def parse_ratios(ratios_raw: str, n: int) -> List[float]:
     else:
         ratio = float(ratios_raw)
         ratios = [ratio] * n
-    assert all([0.0 < r < 1.0 for r in ratios]), "Train ratios must be in (0,1)"
+    assert all(0.0 < r < 1.0 for r in ratios), "Train ratios must be in (0,1)"
     return ratios
 
 
-def split_one(
-    fasta_path: str,
-    meta_path: str,
-    train_ratio: float,
-    id_column: str,
-    serotype_column: str,
-    rng: np.random.Generator,
-):
-    contig_column = DEFAULT_CONTIG_COLUMN
+def load_and_align(fasta_path, meta_path, id_column, contig_column=DEFAULT_CONTIG_COLUMN):
+    """Load a FASTA file and its metadata, align rows by composite ID.
 
-    # Load data
+    Returns
+    -------
+    meta : pd.DataFrame   – aligned metadata (reset index)
+    records : list[SeqRecord] – FASTA records in matching order
+    """
     meta = pd.read_csv(meta_path, sep="\t" if meta_path.endswith(".tsv") else ",")
     fasta_records = list(SeqIO.parse(fasta_path, "fasta"))
 
-    # Determine IDs
-    meta_ids = meta[id_column].astype(str) + CONTIG_SEP + meta[contig_column].astype(str)
+    meta_ids = (
+        meta[id_column].astype(str) + CONTIG_SEP + meta[contig_column].astype(str)
+    )
     fasta_id_set = set(rec.id for rec in fasta_records)
 
-    # Filter metadata to those present in FASTA
     keep_mask = meta_ids.isin(fasta_id_set)
     if not keep_mask.all():
         dropped = (~keep_mask).sum()
-        print(f"Warning: dropping {dropped} metadata rows not found in FASTA {fasta_path}")
+        print(f"  Dropping {dropped} metadata rows not found in {fasta_path}")
     meta = meta[keep_mask].copy()
     meta_ids = meta_ids[keep_mask]
 
-    # Align records
     id_to_rec = {rec.id: rec for rec in fasta_records}
-    records = [id_to_rec[i] for i in meta_ids if i in id_to_rec]
+    records = [id_to_rec[mid] for mid in meta_ids if mid in id_to_rec]
 
-    # Stratified split on serotype; handle rare classes
-    serotypes = meta[serotype_column] if serotype_column in meta.columns else None
-    if serotypes is not None:
-        # Apply the same label-cleaning used during training so that
-        # train/test splits are based on consistent, canonical labels.
-        serotypes = serotypes.map(cleanup_serotype)
-        meta[serotype_column] = serotypes
-    idx_all = np.arange(len(records))
-
-    if serotypes is None:
-        print(f"Warning: serotype column '{serotype_column}' not found in {meta_path}; falling back to random split.")
-        test_size = 1 - train_ratio
-        train_idx, test_idx = train_test_split(
-            idx_all, test_size=test_size, random_state=rng.integers(0, 2**32 - 1)
-        )
-    else:
-        counts = serotypes.value_counts()
-        rail_classes = counts[(counts * train_ratio < 1) | (counts * (1 - train_ratio) < 1)].index.tolist()
-        if rail_classes:
-            print(f"Classes too small for stratified split (sent to train): {[(c, int(counts[c])) for c in rail_classes]}")
-        rail_mask = serotypes.isin(rail_classes)
-        idx_rail = idx_all[rail_mask.to_numpy()]
-        idx_rest = idx_all[~rail_mask.to_numpy()]
-        serotypes_rest = serotypes[~rail_mask]
-
-        if len(np.unique(serotypes_rest)) < 2 or len(idx_rest) == 0:
-            train_idx = idx_all
-            test_idx = np.array([], dtype=int)
-        else:
-            test_size = 1 - train_ratio
-            train_idx_rest, test_idx_rest = train_test_split(
-                idx_rest,
-                test_size=test_size,
-                stratify=serotypes_rest,
-                random_state=rng.integers(0, 2**32 - 1),
-            )
-            train_idx = np.concatenate([idx_rail, train_idx_rest])
-            test_idx = test_idx_rest
-
-    train_records = [records[i] for i in train_idx]
-    test_records = [records[i] for i in test_idx]
-    train_meta = meta.iloc[train_idx]
-    test_meta = meta.iloc[test_idx]
-
-    return train_records, test_records, train_meta, test_meta
+    return meta.reset_index(drop=True), records
 
 
 def main():
     args = parse_args()
-    fastas: Sequence[str] = args.fastas
-    metas: Sequence[str] = args.metadata
-
     rng = np.random.default_rng(args.seed)
-    ratios = parse_ratios(args.ratios, len(fastas))
+    ratios = parse_ratios(args.ratios, len(args.fastas))
     os.makedirs(args.output_dir, exist_ok=True)
 
-    train_fasta_path = os.path.join(args.output_dir, "train.fasta")
-    test_fasta_path = os.path.join(args.output_dir, "test.fasta")
-    train_meta_path = os.path.join(args.output_dir, "train_metadata.csv")
-    test_meta_path = os.path.join(args.output_dir, "test_metadata.csv")
+    serotype_col = args.serotype_column
 
-    all_train_meta, all_test_meta = [], []
-    for fasta_path, meta_path, ratio in zip(fastas, metas, ratios):
-        print(f"\nSplitting {fasta_path} with {meta_path} at train_ratio={ratio}")
-        train_recs, test_recs, train_meta, test_meta = split_one(
-            fasta_path, meta_path, ratio, args.id_column, args.serotype_column, rng
+    # ── Phase 1: Load and align every source ─────────────────────────
+    all_records: list = []
+    meta_parts: list[pd.DataFrame] = []
+    for i, (fasta_path, meta_path) in enumerate(
+        zip(args.fastas, args.metadata)
+    ):
+        print(f"\nLoading source {i}: {fasta_path}")
+        meta, records = load_and_align(fasta_path, meta_path, args.id_column)
+        meta["_source"] = i
+        meta["_rec_offset"] = range(
+            len(all_records), len(all_records) + len(records)
+        )
+        meta_parts.append(meta)
+        all_records.extend(records)
+
+    combined = pd.concat(meta_parts, ignore_index=True)
+    print(
+        f"\nCombined pool: {len(combined)} samples, "
+        f"{combined[serotype_col].nunique()} serotypes"
+    )
+
+    # ── Phase 2: Unified label preprocessing ─────────────────────────
+    n_before = len(combined)
+    combined = preprocess_metadata(combined, serotype_column=serotype_col)
+    print(
+        f"After preprocessing: {len(combined)} samples "
+        f"(dropped {n_before - len(combined)}), "
+        f"{combined[serotype_col].nunique()} serotypes"
+    )
+
+    # ── Phase 3: Global rare-serotype detection ──────────────────────
+    global_counts = combined[serotype_col].value_counts()
+    rare_global = set(
+        global_counts[global_counts < MIN_SEROTYPE_COUNT].index
+    )
+    if rare_global:
+        n_rare = combined[serotype_col].isin(rare_global).sum()
+        print(
+            f"Globally rare serotypes (all -> train): "
+            f"{sorted(rare_global)} ({n_rare} samples)"
         )
 
-        # Append FASTA records
-        with open(train_fasta_path, "a") as f_train:
-            SeqIO.write(train_recs, f_train, "fasta")
-        with open(test_fasta_path, "a") as f_test:
-            SeqIO.write(test_recs, f_test, "fasta")
+    rare_mask = combined[serotype_col].isin(rare_global)
+    train_idx: list[int] = combined.index[rare_mask].tolist()
+    test_idx: list[int] = []
 
-        all_train_meta.append(train_meta)
-        all_test_meta.append(test_meta)
+    # ── Phase 4: Per-source stratified split ─────────────────────────
+    non_rare = combined[~rare_mask]
+    for src_i, ratio in enumerate(ratios):
+        src = non_rare[non_rare["_source"] == src_i]
+        if len(src) == 0:
+            continue
+        print(f"\nSource {src_i}: {len(src)} splittable samples, ratio={ratio}")
 
-    # Concatenate metadata and save
-    if all_train_meta:
-        pd.concat(all_train_meta, ignore_index=True).to_csv(train_meta_path, index=False)
-    if all_test_meta:
-        pd.concat(all_test_meta, ignore_index=True).to_csv(test_meta_path, index=False)
+        # Serotypes too small *within this source* for stratification
+        test_ratio = 1 - ratio
+        min_per_class = max(int(np.ceil(1.0 / test_ratio)), 2)
+        src_counts = src[serotype_col].value_counts()
+        src_rare = set(src_counts[src_counts < min_per_class].index)
+        if src_rare:
+            print(f"  Source-rare (-> train): {sorted(src_rare)}")
+            train_idx.extend(
+                src.index[src[serotype_col].isin(src_rare)].tolist()
+            )
+            src = src[~src[serotype_col].isin(src_rare)]
 
-    print(f"\nWrote train/test fasta/metadata files to {args.output_dir}.")
+        if len(src) == 0:
+            continue
+
+        tr, te = train_test_split(
+            src.index.to_numpy(),
+            test_size=test_ratio,
+            stratify=src[serotype_col],
+            random_state=rng.integers(0, 2**32 - 1),
+        )
+        train_idx.extend(tr.tolist())
+        test_idx.extend(te.tolist())
+
+    # ── Phase 5: Verify label consistency ────────────────────────────
+    train_meta = combined.loc[train_idx]
+    test_meta = combined.loc[test_idx]
+    train_labels = set(train_meta[serotype_col])
+    test_labels = set(test_meta[serotype_col])
+    test_only = test_labels - train_labels
+    if test_only:
+        print(
+            f"\nWARNING: serotypes in test but NOT in train: "
+            f"{sorted(test_only)}"
+        )
+    else:
+        print(f"\nAll {len(test_labels)} test serotypes are present in train.")
+
+    print(f"Train: {len(train_meta)} | Test: {len(test_meta)}")
+
+    # ── Phase 6: Write outputs ───────────────────────────────────────
+    train_records = [all_records[i] for i in train_meta["_rec_offset"]]
+    test_records = [all_records[i] for i in test_meta["_rec_offset"]]
+
+    # Drop internal bookkeeping columns
+    out_cols = [c for c in combined.columns if not c.startswith("_")]
+
+    train_fasta = os.path.join(args.output_dir, "train.fasta")
+    test_fasta = os.path.join(args.output_dir, "test.fasta")
+    with open(train_fasta, "w") as fh:
+        SeqIO.write(train_records, fh, "fasta")
+    with open(test_fasta, "w") as fh:
+        SeqIO.write(test_records, fh, "fasta")
+
+    train_meta[out_cols].to_csv(
+        os.path.join(args.output_dir, "train_metadata.csv"), index=False
+    )
+    test_meta[out_cols].to_csv(
+        os.path.join(args.output_dir, "test_metadata.csv"), index=False
+    )
+
+    print(f"\nWrote train/test files to {args.output_dir}")
 
 
 if __name__ == "__main__":

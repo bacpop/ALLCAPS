@@ -33,10 +33,14 @@ import torch
 
 # ── project imports ──
 from ..consts import (
-    DEFAULT_MODEL, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LEN,
-    DEFAULT_STRIDE_RATIO, DEFAULT_SEP
+    DEFAULT_MODEL, DEFAULT_MAX_LEN, DEFAULT_SEP, CONTIG_SEP
 )
-from ..models import ModelRegistry
+from ..inference import (
+    embed_sequence,
+    load_base_model,
+    load_trained_model,
+    softmax_predict,
+)
 from ..utils import get_sample_id
 
 
@@ -54,57 +58,47 @@ def run_query_pipeline_eval(
     base_model_name: str,
     head_model: str,
     device: str,
-    chunk_size: int,
-    stride_ratio: float,
     max_length: int,
 ) -> pd.DataFrame:
     """Run the query pipeline in eval mode on a FASTA file and return a DataFrame
-    keyed by record.id with columns: pred_serotype, is_cbl, serotype_logits, embedding."""
-    from transformers import AutoTokenizer, AutoModelForMaskedLM
-    from ..trihead.process_trihead_query import transformer_embedding
+    keyed by record.id with columns: pred_serotype, is_cbl, serotype_logits, embedding.
 
-    tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
-    nt_model = AutoModelForMaskedLM.from_pretrained(base_model_name, trust_remote_code=True).to(device)
-    nt_model.eval()
-
-    model_save_dict = torch.load(model_path, map_location=device)
-    model_config = model_save_dict['model_config']
-    idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
-    _ = model_save_dict.get('genogroup_to_idx')  # loaded for reference only
-
-    logistic_model = ModelRegistry.get_model_class(head_model).from_config(model_config).to(device)
-    logistic_model.load_state_dict(model_save_dict['model_state_dict'])
-    logistic_model.eval()
+    Uses the same ``inference.embed_sequence`` path as process_trihead_query.py
+    with ``inference_mode="eval"`` (single window at position 0).
+    """
+    # Load both models via the shared inference module — identical to
+    # process_trihead_query.main()
+    base_bundle = load_base_model(model_name=base_model_name, device=device)
+    head_bundle = load_trained_model(model_path, device=device, head_model=head_model)
+    logistic_model = head_bundle.model
+    idx_to_serotype = head_bundle.idx_to_serotype
 
     rows = {}
     for record in tqdm(SeqIO.parse(fasta_path, "fasta"), desc="Query-pipeline eval"):
-        cbl_list, sero_list, geno_list, emb_list = transformer_embedding(
-            tokenizer=tokenizer,
-            base_model=nt_model,
-            logistic_model=logistic_model,
+        # Canonical embedding — single source of truth
+        cbl_list, sero_list, _geno_list, z_list = embed_sequence(
+            base_bundle=base_bundle,
+            head_model=logistic_model,
             sequence=str(record.seq),
             device=device,
-            chunk_size=chunk_size,
-            stride_ratio=stride_ratio,
-            step=2000,
             max_length=max_length,
             inference_mode="eval",          # <-- single window at pos 0
         )
 
         sel_cbl = np.asarray(cbl_list[0]).squeeze()
         sel_sero = np.asarray(sero_list[0]).squeeze()
-        sel_emb = np.asarray(emb_list[0])
+        sel_z = np.asarray(z_list[0])
 
         cbl_probs = torch.softmax(torch.tensor(sel_cbl, dtype=torch.float32), dim=-1).numpy()
         is_cbl = bool(cbl_probs[1] > 0.5)
-        pred_idx = int(np.argmax(torch.softmax(torch.tensor(sel_sero, dtype=torch.float32), dim=-1).numpy()))
-        pred_serotype = idx_to_serotype[pred_idx]
+
+        pred_serotype, _, _ = softmax_predict(sel_sero, idx_to_serotype)
 
         rows[record.id] = {
             "query_pred_serotype": pred_serotype,
             "query_is_cbl": is_cbl,
             "query_serotype_logits": sel_sero,
-            "query_embedding": sel_emb,
+            "query_embedding": sel_z,
         }
 
     return pd.DataFrame.from_dict(rows, orient="index")
@@ -121,16 +115,12 @@ def run_npz_eval_path(
     """Load pre-computed .npz embeddings (z vectors) and run classifier heads directly,
     matching the eval_serotype_classifier.py path. Return DataFrame keyed by record_id."""
 
-    model_save_dict = torch.load(model_path, map_location=device)
-    model_config = model_save_dict['model_config']
-    idx_to_serotype = {v: k for k, v in model_save_dict['serotype_to_idx'].items()}
-
-    model = ModelRegistry.get_model_class(head_model).from_config(model_config).to(device)
-    model.load_state_dict(model_save_dict['model_state_dict'])
-    model.eval()
+    head_bundle = load_trained_model(model_path, device=device, head_model=head_model)
+    model = head_bundle.model
+    idx_to_serotype = head_bundle.idx_to_serotype
 
     X = np.load(npz_path, allow_pickle=True)
-    labels_df = pd.read_csv(labels_path, sep="\t", index_col=0)
+    labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
     labels_df["sample_key"] = (
         labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl")
         + DEFAULT_SEP
@@ -153,14 +143,13 @@ def run_npz_eval_path(
             cbl_logits = model.cbl_classifier(zt)
             serotype_logits = model.serotype_classifier(zt)
         cbl_probs = torch.softmax(cbl_logits, dim=1)[:, 1].cpu().numpy()
-        sero_probs = torch.softmax(serotype_logits, dim=1).cpu().numpy()
-        pred_idx = int(np.argmax(sero_probs))
-        pred_serotype = idx_to_serotype[pred_idx]
+        sero_logits_np = serotype_logits.squeeze(0).cpu().numpy()
+        pred_serotype, _, _ = softmax_predict(sero_logits_np, idx_to_serotype)
 
         rows[pid] = {
             "npz_pred_serotype": pred_serotype,
             "npz_is_cbl": bool(cbl_probs[0] > 0.5),
-            "npz_serotype_logits": serotype_logits.squeeze(0).cpu().numpy(),
+            "npz_serotype_logits": sero_logits_np,
             "npz_embedding": z,
         }
     return pd.DataFrame.from_dict(rows, orient="index")
@@ -169,14 +158,14 @@ def run_npz_eval_path(
 def sample_fasta(fasta_path, labels_path, n_per_serotype, seed=42):
     """Sample n_per_serotype records per serotype from the FASTA, write to a temp file.
     Returns (tmp_fasta_path, set-of-record-ids-sampled)."""
-    labels_df = pd.read_csv(labels_path, sep="\t", index_col=0)
+    labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
     labels_df = labels_df[labels_df["Serotype"] != "Non-typeable"]
     labels_df = labels_df[labels_df["Is_capsule"].astype(bool)]
-
+    labels_df["fasta_key"] = labels_df.index + CONTIG_SEP + labels_df["Contig_ID"].astype(str)
     rng = random.Random(seed)
     sampled_ids = set()
     for sero, grp in labels_df.groupby("Serotype"):
-        ids = grp.index.tolist()
+        ids = grp["fasta_key"].tolist()
         n = min(n_per_serotype, len(ids))
         sampled_ids.update(rng.sample(ids, n))
 
@@ -206,8 +195,6 @@ def main():
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--base_model", default=DEFAULT_MODEL)
     parser.add_argument("--head_model", default="transformer_trihead_lr")
-    parser.add_argument("--chunk_size", type=int, default=DEFAULT_CHUNK_SIZE)
-    parser.add_argument("--stride_ratio", type=float, default=DEFAULT_STRIDE_RATIO)
     parser.add_argument("--max_length", type=int, default=DEFAULT_MAX_LEN)
     args = parser.parse_args()
 
@@ -225,8 +212,6 @@ def main():
         base_model_name=args.base_model,
         head_model=args.head_model,
         device=args.device,
-        chunk_size=args.chunk_size,
-        stride_ratio=args.stride_ratio,
         max_length=args.max_length,
     )
 
@@ -250,9 +235,8 @@ def main():
     print(f"Common samples: {len(common)} (query: {len(query_df)}, npz: {len(npz_df)})")
 
     if len(common) == 0:
-        print("ERROR: No common samples between query and npz results. Check ID formats.")
         os.unlink(tmp_fasta)
-        return
+        raise ValueError("No common samples between query and npz results. Check ID formats.")
 
     merged = query_df.loc[common].join(npz_df.loc[common])
 

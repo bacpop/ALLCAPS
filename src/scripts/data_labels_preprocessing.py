@@ -6,7 +6,6 @@ It takes a raw labels TSV file and outputs a cleaned version with standardized s
 # Example usage: python src/scripts/labels_preprocessing.py --metadata data/monocle-metadata.tsv --output_dir results/
 import re
 import pandas as pd
-import numpy as np
 import argparse
 from pathlib import Path
 
@@ -81,6 +80,7 @@ def cleanup_serotype(value):
     untypables = [
         "NON-TYPEABLE",
         "NT",
+        "NTR",
         "SWISS_NT",
         "UNTYPABLE",
         "COVERAGE TOO LOW",
@@ -88,12 +88,12 @@ def cleanup_serotype(value):
         "SEROBA FAILURE",
         "NCC2_ALIC_ALID_NON_ENCAPSULATED",
         "NON-TYPEABLE/NCC2A",
+        "NOVEL PATTERN",
     ]
-
-    value = value.strip().upper()
 
     if pd.isna(value):
         return NON_TYPEABLE
+    value = str(value).strip().upper()
 
     # Standardize mappings
     if value in serotype_mapping:
@@ -127,6 +127,27 @@ def cleanup_serotype(value):
     return value
 
 
+def preprocess_metadata(
+    df: pd.DataFrame,
+    serotype_column: str = DEFAULT_LABEL_COLUMN,
+    drop_nontypeable: bool = True,
+    skip_labels: list = None,
+) -> pd.DataFrame:
+    """Unified metadata preprocessing: clean serotypes, optionally drop
+    non-typeables and specific labels.
+
+    This is the single entry-point for all label cleaning so that
+    training and evaluation always see identical label sets.
+    """
+    df = df.copy()
+    df[serotype_column] = df[serotype_column].map(cleanup_serotype)
+    if drop_nontypeable:
+        df = df[df[serotype_column] != NON_TYPEABLE]
+    if skip_labels:
+        df = df[~df[serotype_column].isin(skip_labels)]
+    return df
+
+
 def process_labels(raw_path, clean_path):
     """
     Process existing raw labels file and clean serotypes.
@@ -146,10 +167,7 @@ def process_labels(raw_path, clean_path):
     print(f"Found {len(original_serotypes)} unique serotypes")
 
     print("Cleaning serotypes...")
-    raw_df["Serotype"] = raw_df["Serotype"].apply(cleanup_serotype)
-
-    print("Dropping Non-typeables...")
-    raw_df = raw_df[raw_df["Serotype"] != NON_TYPEABLE]
+    raw_df = preprocess_metadata(raw_df)
 
     cleaned_serotypes = raw_df.Serotype.unique().tolist()
     print(f"After cleaning: {len(cleaned_serotypes)} unique serotypes")

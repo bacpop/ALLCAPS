@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 
 from .consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP
+from .data_labels_preprocessing import preprocess_metadata
 
 
 def main():
@@ -27,18 +28,13 @@ def main():
         print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
         args.skip_labels = []
 
-    label_column = args.label_column
-    non_cbl_label = DEFAULT_NONCBL_LABEL
-
     labels = pd.read_csv(args.clean_labels)
     print(f"Loaded {len(labels)} cleaned label entries")
-    print(f"Unique serotypes in cleaned labels: {labels.Serotype.nunique()}")
-    if args.skip_labels:
-        skip_indices = labels['Serotype'].isin(args.skip_labels)
-        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
-        labels = labels[~skip_indices]
-        print(f"Remaining entries after skipping: {len(labels)}")
-        print(f"Unique serotypes after skipping: {labels.Serotype.nunique()}")
+    labels = preprocess_metadata(
+        labels,
+        skip_labels=args.skip_labels or None,
+    )
+    print(f"After preprocessing: {len(labels)} entries, {labels.Serotype.nunique()} serotypes")
 
     # Create output directory if it doesn't exist
     output_path = Path(args.output_dir)
