@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import classification_report, f1_score, accuracy_score, confusion_matrix
 
-from .consts import DEFAULT_LABEL_COLUMN, DEFAULT_MISSING_LABEL, CONTIG_SEP
-from .utils import map_serotype_to_group
+from .consts import DEFAULT_LABEL_COLUMN, DEFAULT_MISSING_LABEL, DEFAULT_NONCBL_LABEL, SEROGROUP_LABELS, CONTIG_SEP
+from .utils import map_serotype_to_group, classify_label_type
 
 
 DEFAULT_ID_COLUMN = "Public_ID"
@@ -76,10 +76,18 @@ def _evaluate(
 	output_dir: str,
 	report_stem: str,
 	missing_label: str,
+	exclude_labels: Optional[set] = None,
 ):
 	valid_mask = df[true_col].notna() & df[pred_col].notna()
 	df_eval = df.loc[valid_mask].copy()
 	df_eval = df_eval[df_eval[true_col] != missing_label]
+	if exclude_labels:
+		n_before = len(df_eval)
+		df_eval = df_eval[~df_eval[true_col].isin(exclude_labels)]
+		n_excluded = n_before - len(df_eval)
+		if n_excluded > 0:
+			print(f"  [{report_stem}] Excluded {n_excluded} samples with labels: "
+				  f"{sorted(exclude_labels & set(df.loc[valid_mask, true_col].unique()))}")
 	if df_eval.empty:
 		print(f"No valid samples for {report_stem} evaluation.")
 		return
@@ -164,9 +172,12 @@ def main(args):
 	meta = meta.copy()
 	meta["record_id"] = meta_id
 
+	n_meta, n_query = len(meta), len(query_df)
 	merged = meta.merge(query_df, left_on="record_id", right_index=True, how="inner")
 	if merged.empty:
 		raise ValueError("No matching records between metadata and query_results.csv")
+	if len(merged) < min(n_meta, n_query):
+		print(f"WARNING: Inner merge dropped samples. Meta={n_meta}, Query={n_query}, Merged={len(merged)}")
 
 	label_column = args.label_column
 	if label_column not in merged.columns:
@@ -175,9 +186,27 @@ def main(args):
 	merged.rename(columns={label_column: "true_serotype"}, inplace=True)
 	merged.rename(columns={args.pred_column: "pred_serotype"}, inplace=True)
 
+	# ── Diagnostic: label-type breakdown ─────────────────────
+	true_labels = merged["true_serotype"].astype(str)
+	label_types = true_labels.apply(classify_label_type)
+	noncbl_count = (true_labels == DEFAULT_NONCBL_LABEL).sum()
+	print(f"\nLabel-type breakdown (n={len(merged)}):")
+	print(f"  serotype:       {(label_types == 'serotype').sum() - noncbl_count}")
+	print(f"  serogroup_only: {(label_types == 'serogroup_only').sum()}")
+	print(f"  compound:       {(label_types == 'compound').sum()}")
+	print(f"  NON-CBL:        {noncbl_count}")
+
 	merged_path = os.path.join(args.output_dir, "merged_query_results.csv")
 	merged.to_csv(merged_path, index=False)
 	print(f"Merged results saved to: {merged_path}")
+
+	# ── Serotype evaluation: exclude invalid label types ─────
+	serotype_exclude = {DEFAULT_NONCBL_LABEL} | set(SEROGROUP_LABELS)
+	compound_labels = {
+		lbl for lbl in true_labels.unique()
+		if classify_label_type(lbl) == "compound"
+	}
+	serotype_exclude |= compound_labels
 
 	_evaluate(
 		df=merged,
@@ -186,25 +215,31 @@ def main(args):
 		output_dir=args.output_dir,
 		report_stem="serotype",
 		missing_label=args.missing_label,
+		exclude_labels=serotype_exclude,
 	)
 
-	if args.genogroup_column in merged.columns:
-		genogroup_map = _build_genogroup_map(merged, "true_serotype", args.genogroup_column)
-		if genogroup_map:
-			merged["pred_genogroup"] = merged["pred_serotype"].map(genogroup_map)
-			merged.rename(columns={args.genogroup_column: "true_genogroup"}, inplace=True)
-			_evaluate(
-				df=merged,
-				true_col="true_genogroup",
-				pred_col="pred_genogroup",
-				output_dir=args.output_dir,
-				report_stem="genogroup",
-				missing_label=args.missing_label,
-			)
-		else:
-			print("Genogroup column present, but could not build serotype->genogroup mapping.")
-	else:
-		print("Genogroup column not found; skipping genogroup evaluation.")
+	# ── Genogroup evaluation: derive truth from biology ──────
+	merged["true_genogroup"] = merged["true_serotype"].apply(
+		lambda s: map_serotype_to_group(str(s))
+	)
+	genogroup_pred_col = args.genogroup_column
+	if genogroup_pred_col not in merged.columns:
+		# Fall back: map predicted serotype through biology mapping
+		merged["pred_genogroup"] = merged["pred_serotype"].apply(
+			lambda s: map_serotype_to_group(str(s))
+		)
+		genogroup_pred_col = "pred_genogroup"
+
+	genogroup_exclude = {DEFAULT_NONCBL_LABEL}
+	_evaluate(
+		df=merged,
+		true_col="true_genogroup",
+		pred_col=genogroup_pred_col,
+		output_dir=args.output_dir,
+		report_stem="genogroup",
+		missing_label=args.missing_label,
+		exclude_labels=genogroup_exclude,
+	)
 
 
 if __name__ == "__main__":

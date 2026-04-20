@@ -47,13 +47,27 @@ THRESH_CPS = 0.5
 DEFAULT_ENERGY_PERCENTILE = 99.0
 DEFAULT_ROLLING_STEP = 2000
 
-# Temporary hard-coded energy thresholds (TODO: load from JSON / CLI)
-_PERCENTILES_SEROTYPE = {
+# Fallback hard-coded energy thresholds; prefer loading from energy_summary.json
+_PERCENTILES_SEROTYPE_FALLBACK = {
     "93.0": -8.152,
     "95.0": -8.368741035461426,
     "99.0": -6.334590911865234,
     "99.5": -5.951267242431641,
 }
+
+
+def _load_energy_percentiles(json_path: Optional[str]) -> dict:
+    """Load energy percentiles from energy_summary.json, falling back to hard-coded values."""
+    if json_path and os.path.isfile(json_path):
+        import json
+        with open(json_path) as f:
+            data = json.load(f)
+        pcts = data.get("percentiles_serotype", {})
+        if pcts:
+            # Ensure keys are strings for consistent lookup
+            return {str(k): float(v) for k, v in pcts.items()}
+        print(f"WARNING: energy_summary.json at {json_path} missing 'percentiles_serotype'; using fallback.")
+    return dict(_PERCENTILES_SEROTYPE_FALLBACK)
 
 
 # ──────────────────────────────────────────────────────────────
@@ -67,12 +81,16 @@ def main(args):
     rolling_step = args.model_params.get("rolling_step", DEFAULT_ROLLING_STEP)
     cbl_threshold = THRESH_CPS
 
-    # Energy threshold
+    # Energy threshold — prefer loading from JSON over hard-coded values
     resolved_temperature = float(args.energy_temperature)
-    tau_serotype: Optional[float] = _PERCENTILES_SEROTYPE.get(
+    percentiles = _load_energy_percentiles(getattr(args, 'energy_summary', None))
+    tau_serotype: Optional[float] = percentiles.get(
         str(args.energy_percentile)
     )
-    assert tau_serotype is not None, "tau_serotype must be set"
+    if tau_serotype is None:
+        raise ValueError(
+            f"Energy percentile {args.energy_percentile} not found in percentiles: {sorted(percentiles.keys())}"
+        )
 
     set_deterministic_seeds()
 
@@ -274,6 +292,12 @@ def parse_args():
         type=str,
         default=None,
         help="Path to fitted OpenMax .pkl for open-set recognition.",
+    )
+    p.add_argument(
+        "--energy_summary",
+        type=str,
+        default=None,
+        help="Path to energy_summary.json with calibrated energy thresholds.",
     )
 
     args = p.parse_args()
