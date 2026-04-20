@@ -15,6 +15,7 @@ from sklearn.model_selection import StratifiedKFold
 
 from ..models import TransformerTriHeadLR, DatasetRegistry
 from ..utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn, classify_label_type
+from ..data_augmentation import EmbeddingAugmentor, AugmentedChunkedDataset
 
 from ..consts import (
     RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
@@ -30,7 +31,8 @@ from collections import Counter
 
 EPS = 1e-9
 ALPHA_SERO = 2
-WANDB_PROJECT_NAME = "logistic-trihead"
+ALPHA_GENO = 1
+WANDB_PROJECT_NAME = "logistic-trihead-augment"
 
 
 def compute_class_weights(labels, label_to_idx, device):
@@ -78,6 +80,17 @@ def parse_args():
     parser.add_argument("--hierarchical_loss", action="store_true",
                         help="Use weighted (coarse, fine) labels for training.")
     parser.add_argument("--early_stopping", type=int, default=DEFAULT_EARLY_STOPPING)
+    # Embedding-level augmentation (applied on-the-fly during training only)
+    parser.add_argument("--aug_noise_std", type=float, default=0.0,
+                        help="Gaussian noise std for embedding augmentation (0 = disabled).")
+    parser.add_argument("--aug_chunk_dropout", type=float, default=0.0,
+                        help="Chunk dropout probability for embedding augmentation (0 = disabled).")
+    parser.add_argument("--aug_spec_freq", type=float, default=0.0,
+                        help="SpecAugment frequency masking probability (0 = disabled).")
+    parser.add_argument("--aug_spec_width", type=int, default=16,
+                        help="SpecAugment max mask width in feature dimensions.")
+    parser.add_argument("--aug_n_views", type=int, default=1,
+                        help="Number of augmented views per sample (1 = original only, 2+ = contrastive views).")
     args = parser.parse_args()
 
     try:
@@ -150,7 +163,7 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
         if capsule_mask.sum() > 1:
             contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
 
-        loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
+        loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + ALPHA_GENO * genogroup_loss_val + alpha * contrastive_loss_val
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -226,7 +239,7 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
             if capsule_mask.sum() > 1:
                 contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
 
-            loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + genogroup_loss_val + alpha * contrastive_loss_val
+            loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + ALPHA_GENO * genogroup_loss_val + alpha * contrastive_loss_val
             total_loss += loss.item()
 
             # CBL accuracy
@@ -283,6 +296,21 @@ def main(args):
     dataset_name = args.model_params.get("dataset_name", DEFAULT_DATASET_OBJECT)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
+
+    # ── Build embedding augmentor (training-only) ──
+    aug_enabled = (args.aug_noise_std > 0 or args.aug_chunk_dropout > 0
+                   or args.aug_spec_freq > 0)
+    embedding_augmentor = None
+    if aug_enabled:
+        embedding_augmentor = EmbeddingAugmentor(
+            noise_std=args.aug_noise_std,
+            chunk_dropout=args.aug_chunk_dropout,
+            spec_augment_freq=args.aug_spec_freq,
+            spec_augment_width=args.aug_spec_width,
+        )
+        print(f"Embedding augmentation enabled: noise_std={args.aug_noise_std}, "
+              f"chunk_dropout={args.aug_chunk_dropout}, spec_freq={args.aug_spec_freq}, "
+              f"spec_width={args.aug_spec_width}, n_views={args.aug_n_views}")
     
     print("Loading data...")
     labels = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
@@ -346,6 +374,11 @@ def main(args):
         "output_dim": output_dim,
         "num_serotypes": num_serotypes,
         "num_genogroups": num_genogroups,
+        "aug_noise_std": args.aug_noise_std,
+        "aug_chunk_dropout": args.aug_chunk_dropout,
+        "aug_spec_freq": args.aug_spec_freq,
+        "aug_spec_width": args.aug_spec_width,
+        "aug_n_views": args.aug_n_views,
     })
     
     if args.hierarchical_loss:
@@ -393,13 +426,22 @@ def main(args):
     for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(strat_labels)), strat_labels)):
         print(f"Fold {fold+1} / {k_folds}")
 
-        train_ds = dataset_class(
+        train_ds_base = dataset_class(
             embeddings_dir=args.embedding_dir,
             sample_ids=np.array(sample_ids)[train_idx],
             serotype_labels=np.array(labels_known)[train_idx],
             capsule_labels=np.array(is_capsule)[train_idx],
             serotype_known=serotype_known_arr[train_idx],
         )
+        # Wrap training set with embedding augmentation if enabled
+        if embedding_augmentor is not None:
+            train_ds = AugmentedChunkedDataset(
+                train_ds_base, augmentor=embedding_augmentor,
+                n_views=args.aug_n_views,
+            )
+        else:
+            train_ds = train_ds_base
+
         test_ds = dataset_class(
             embeddings_dir=args.embedding_dir,
             sample_ids=np.array(sample_ids)[test_idx],
@@ -462,13 +504,20 @@ def main(args):
 
     # Retrain on all data
     print("Retraining on all data...")
-    all_ds = dataset_class(
+    all_ds_base = dataset_class(
         embeddings_dir=args.embedding_dir,
         sample_ids=sample_ids,
         serotype_labels=labels_known,
         capsule_labels=is_capsule,
         serotype_known=serotype_known_arr,
     )
+    if embedding_augmentor is not None:
+        all_ds = AugmentedChunkedDataset(
+            all_ds_base, augmentor=embedding_augmentor,
+            n_views=args.aug_n_views,
+        )
+    else:
+        all_ds = all_ds_base
     all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
 
     # -- class weights from full dataset (serotype from resolved only) --
@@ -499,8 +548,10 @@ def main(args):
     for epoch in tqdm(range(args.epochs), desc="Final Training"):
         train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
     
+    # Evaluate on clean (unaugmented) data for honest metrics
     print("Evaluating final model on all data...")
-    final_loss, final_cbl_accuracy, final_serotype_accuracy, final_genogroup_accuracy = evaluate(model_final, all_loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
+    clean_loader = DataLoader(all_ds_base, batch_size=args.batch_size, collate_fn=collate_fn)
+    final_loss, final_cbl_accuracy, final_serotype_accuracy, final_genogroup_accuracy = evaluate(model_final, clean_loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
     print(f"Final model - Loss: {final_loss:.4f}, CBL Accuracy: {final_cbl_accuracy:.4f}, Serotype Accuracy: {final_serotype_accuracy:.4f}, Genogroup Accuracy: {final_genogroup_accuracy:.4f}")
 
     # Save model and serotype mapping
@@ -533,3 +584,4 @@ if __name__ == "__main__":
     )
     wandb.run.name = f"{WANDB_PROJECT_NAME}-{run_id}"
     main(args)
+
