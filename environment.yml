@@ -1,0 +1,26 @@
+name: all-caps
+channels:
+  - conda-forge
+  - bioconda
+  - pytorch
+  - nvidia
+dependencies:
+  - python=3.10
+  - numpy
+  - pandas
+  - tqdm
+  - biopython
+  - pytorch::pytorch
+  - pytorch::torchvision
+  - nvidia::pytorch-cuda
+  - scikit-learn
+  - scipy
+  - matplotlib
+  - seaborn
+  - pip
+  - pip:
+      - torch
+      - transformers
+      - wandb
+      - accelerate
+
