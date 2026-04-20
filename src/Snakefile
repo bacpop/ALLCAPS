@@ -23,16 +23,13 @@ SEROTYPES = config["serotypes"]
 rule all:
     input:
         # Data preprocessing outputs
-        f"{config["data_dir"]}/contigs_cleaned.fasta",
-        f"{config["data_dir"]}/contigs_noncbl_cleaned.fasta",
-        # Embedding inference outputs
-        # f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl/.complete",
+        f"{config['data_dir']}/train.fasta",
+        f"{config['data_dir']}/test.fasta",
         # Labels processing outputs
         f"{RESULTS_DIR}/cleaned_labels.csv",
-        f"{RESULTS_DIR}/final_metadata.tsv",
-        # Embedding directories
-        f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
-        f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+        f"{config['data_dir']}/final_metadata.csv",
+        # Embedding directory (flat)
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
         # Model and processing outputs
         f"{RESULTS_DIR}/transformer_model.pth",
         f"{RESULTS_DIR}/inference_results.npz",
@@ -53,17 +50,17 @@ rule all:
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv", heldout=SEROTYPES)
 
 rule locus_cutting:
-    """It cuts the loci from the input fasta files before embedding."""
+    """Cut CBL loci from raw FASTA files; produces CBL and non-CBL sequences."""
     input:
         infiles=config["infiles"],
     params:
         query=config["locus_cutter_query"],
-        outpref=f"{config["data_dir"]}/contigs",
+        outpref=f"{config['data_dir']}/contigs",
         cutoff=config.get("locus_cutter_cutoff", 0.7),
         max_extension=config.get("locus_cutter_max_extension", 1e9)
     output:
-        f"{params.outpref}_cleaned.fasta",
-        f"{params.outpref}_noncbl_cleaned.fasta"
+        f"{config['data_dir']}/contigs_cleaned.fasta",
+        f"{config['data_dir']}/contigs_noncbl_cleaned.fasta"
     shell:
         """
         python -m scripts.data_locus_cutter \
@@ -73,54 +70,6 @@ rule locus_cutting:
             --outpref {params.outpref} \
             --max_extension {params.max_extension} \
             --save-noncbl
-        python -m scripts.tmp_fasta_contig_cleaner.py {params.outpref}.fasta
-        python -m scripts.tmp_fasta_contig_cleaner.py {params.outpref}_noncbl.fasta
-        """
-
-rule infer_chunks_cbl:
-    input:
-        fasta=f"{config["data_dir"]}/contigs_cleaned.fasta"
-    output:
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked/cbl")
-    params:
-        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
-        device=config.get("device", "cuda"),
-        chunk_size=config.get("chunk_size", 4000),
-        stride_ratio=config.get("stride_ratio", 0.5),
-        seq_max_len=config.get("seq_max_len", 30_000)
-    shell:
-        """
-        python -m scripts.embed_transformer \
-            --fasta {input.fasta} \
-            --out_dir {output} \
-            --device {params.device} \
-            --model_name {params.base_model} \
-            --chunk_size {params.chunk_size} \
-            --stride_ratio {params.stride_ratio} \
-            --seq_max_len {params.seq_max_len}
-        """
-
-rule infer_chunks_noncbl:
-    input:
-        fasta=f"{config["data_dir"]}/contigs_noncbl_cleaned.fasta"
-    output:
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl")
-    params:
-        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
-        device=config.get("device", "cuda"),
-        chunk_size=config.get("chunk_size", 4000),
-        stride_ratio=config.get("stride_ratio", 0.5),
-        seq_max_len=config.get("seq_max_len", 30_000)
-    shell:
-        """
-        python -m scripts.embed_transformer \
-            --fasta {input.fasta} \
-            --out_dir {output} \
-            --device {params.device} \
-            --model_name {params.base_model} \
-            --chunk_size {params.chunk_size} \
-            --stride_ratio {params.stride_ratio} \
-            --seq_max_len {params.seq_max_len}
         """
 
 rule labels_preprocessing:
@@ -135,29 +84,73 @@ rule labels_preprocessing:
             --output_dir {RESULTS_DIR}
         """
 
-rule labels_postprocessing:
+rule train_test_split:
+    """Combine multiple FASTA/metadata sources and stratified-split into train/test."""
     input:
-        labels=f"{RESULTS_DIR}/cleaned_labels.csv",
-        cbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
-        noncbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+        cbl=f"{config['data_dir']}/contigs_cleaned.fasta",
+        noncbl=f"{config['data_dir']}/contigs_noncbl_cleaned.fasta",
+        labels=f"{RESULTS_DIR}/cleaned_labels.csv"
     params:
-        skip_labels=",".join(config.get("skip_labels", [])),
-        label_column=config.get("label_column", "Serotype")
+        fastas=" ".join(config.get("split_fastas", [])),
+        metadata=" ".join(config.get("split_metadata", [])),
+        ratios=config.get("split_ratios", "0.9"),
     output:
-        f"{RESULTS_DIR}/final_metadata.tsv"
+        f"{config['data_dir']}/train.fasta",
+        f"{config['data_dir']}/test.fasta",
+        f"{config['data_dir']}/train_metadata.csv",
+        f"{config['data_dir']}/test_metadata.csv",
+    shell:
+        """
+        python -m scripts.helpers.data_train_test_split \
+            --fastas {params.fastas} \
+            --metadata {params.metadata} \
+            --ratios {params.ratios} \
+            --output_dir {config[data_dir]}
+        """
+
+rule embed_base:
+    """Compute ProKBERT chunk embeddings for all training sequences (flat output dir)."""
+    input:
+        fasta=f"{config['data_dir']}/train.fasta"
+    output:
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked")
+    params:
+        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
+        device=config.get("device", "cuda"),
+        chunk_size=config.get("chunk_size", 4000),
+        stride_ratio=config.get("stride_ratio", 0.5),
+        seq_max_len=config.get("seq_max_len", 30_000)
+    shell:
+        """
+        python -m scripts.embed_transformer \
+            --fasta {input.fasta} \
+            --out_dir {output} \
+            --device {params.device} \
+            --model_name {params.base_model} \
+            --chunk_size {params.chunk_size} \
+            --stride_ratio {params.stride_ratio} \
+            --seq_max_len {params.seq_max_len}
+        """
+
+rule labels_postprocessing:
+    """Filter metadata to only samples that have a matching embedding file."""
+    input:
+        labels=f"{config['data_dir']}/train_metadata.csv",
+        emb_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
+    output:
+        f"{config['data_dir']}/final_metadata.csv"
     shell:
         """
         python -m scripts.data_labels_postprocessing \
             --clean_labels {input.labels} \
-            --output_dir {RESULTS_DIR} \
-            --skip_labels {params.skip_labels} \
-            --label_column {params.label_column}
+            --embedding_dir {input.emb_dir} \
+            --output_dir {config[data_dir]}
         """
 
 rule train_model:
     input:
         embeddings=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         protected(f"{RESULTS_DIR}/transformer_model.pth")
     params:
@@ -184,7 +177,7 @@ rule train_model:
 rule embed_chunks:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         model=f"{RESULTS_DIR}/transformer_model.pth"
     output:
         f"{RESULTS_DIR}/inference_results.npz"
@@ -208,7 +201,7 @@ rule embed_chunks:
 rule visualize_embeddings:
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
     output:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
@@ -245,7 +238,7 @@ rule serotype_classification:
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
         model=f"{RESULTS_DIR}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/serotype_predictions.txt",
         f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
@@ -271,7 +264,7 @@ rule serotype_classification:
 rule train_model_loo:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
     params:
@@ -301,7 +294,7 @@ rule train_model_loo:
 rule embed_chunks_loo:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz"
@@ -329,7 +322,7 @@ rule serotype_classification_loo:
     input:
         embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
         model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt",
         f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv",
@@ -360,7 +353,7 @@ rule serotype_classification_loo:
 
 rule novel_detection:
     input:
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         trained_model=f"{RESULTS_DIR}/transformer_model.pth",
         openmax_params=f"{RESULTS_DIR}/openmax_params.pkl",
     params:
@@ -388,7 +381,7 @@ rule openmax_calibration:
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
         model=f"{RESULTS_DIR}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
     output:
         f"{RESULTS_DIR}/openmax_params.pkl",
     params:
@@ -410,7 +403,7 @@ rule openmax_calibration_loo:
     input:
         embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
         model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/openmax_params.pkl",
     params:
