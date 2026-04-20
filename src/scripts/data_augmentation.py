@@ -16,7 +16,7 @@ Two levels of augmentation are provided:
    mix-up.
 
 A drop-in ``AugmentedChunkedDataset`` wraps an existing
-``ContrastiveChunkedDataset`` and applies embedding-level augmentation
+``MultidomainChunkedDataset`` and applies embedding-level augmentation
 on-the-fly.
 
 CLI usage (offline FASTA augmentation)::

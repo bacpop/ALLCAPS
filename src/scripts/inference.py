@@ -201,7 +201,7 @@ def embed_sequence(
     model (ProkBERT base → TransformerTriHead / LR classifier).
 
     The function replicates the exact data-processing path used during
-    training (embed_transformer.py → ContrastiveChunkedDataset → model.forward):
+    training (embed_transformer.py → MultidomainChunkedDataset → model.forward):
 
     1. Truncate sequence to ``max_length`` from the chosen start position.
     2. Chunk via ``chunk_sequence(candidate, chunk_size, stride)``.
