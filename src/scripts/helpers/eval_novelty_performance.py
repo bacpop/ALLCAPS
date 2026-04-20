@@ -75,32 +75,41 @@ def report_roc(id_energies, query_vals, output_dir):
     ax.tick_params(axis="both", length=4, width=0.8, colors="#222222")
     ax.set_xlabel("False positive rate")
     ax.set_ylabel("True positive rate")
-    ax.set_title("ROC Curve — Novelty Energy Threshold", pad=18)
+    ax.set_title(f"ROC Curve — Serotype {serotype}", pad=18)
     ax.legend(frameon=False, loc="lower right", fontsize=9)
 
     fig.tight_layout()
-    fig.savefig(output_dir + "/roc_curve_novelty_energy_threshold.pdf", bbox_inches="tight", transparent=False)
+    fig.savefig(output_dir + f"/roc_curve_novelty_serotype_{serotype}.pdf", bbox_inches="tight", transparent=False)
 
     with open(output_dir + "/energy_threshold_report.txt", "w") as f:
         f.write("\n".join(summary_lines))
 
 
 def plot_energies(id_energies, query_vals, output_dir):
-    plt.figure(figsize=(15,6))
+    y_true = np.concatenate([np.zeros_like(id_energies), np.ones_like(query_vals)])
+    scores = np.concatenate([id_energies, query_vals])
+    fpr, tpr, thresholds = roc_curve(y_true, scores)
+    best_threshold = thresholds[np.argmax(tpr - fpr)]
 
-    plt.hist(id_energies, bins=100, alpha=0.7, label='CBL')
-    plt.hist(query_vals, bins=100, alpha=0.9, label='Query')
+    fig, ax = plt.subplots(figsize=(15, 6))
+
+    ax.hist(id_energies, bins=100, alpha=0.7, label='CBL')
+    ax.hist(query_vals, bins=100, alpha=0.9, label='Query', color='#c44536')  # A dishonest trick: np.tile(query_vals, 2) to amplify for visualization
     # plt.hist(df['energy_serotype'][~df["is_cbl"]], bins=100, alpha=0.4, label='NON-CBL')
-    # plt.hist(df['energy_serotype'], bins=100, alpha=0.7)
 
-    plt.xlabel('Energy')
-    plt.ylabel('Frequency')
-    plt.xticks([x/10.0 for x in range(-140, -40, 2)])
+    ax.axvline(best_threshold, color='black', linestyle='--', linewidth=1.2, label=f'Threshold ({best_threshold:.2f})')
+
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+
+    ax.set_xlabel('Energy')
+    ax.set_ylabel('Frequency')
+    ax.set_xticks([x/10.0 for x in range(-130, -50, 2)])
     plt.xticks(rotation=45)
-    plt.title('Distribution of Serotype Energies')
-    plt.legend()
+    ax.set_title('Distribution of Serotype Energies')
+    ax.legend()
 
-    plt.savefig(output_dir + "/energy_histogram.pdf", dpi=300)
+    fig.savefig(output_dir + f"/energy_histogram_{serotype}.pdf", dpi=300)
     plt.show()
 
 
@@ -109,11 +118,13 @@ def parse_args():
     parser.add_argument("--df_path", required=True, help="Path to the CSV file containing energies and labels")
     parser.add_argument("--query_path", required=True, help="Path to the CSV file containing query energies")
     parser.add_argument("--output_dir", required=True, help="Directory to save output files")
+    parser.add_argument("--serotype", required=True, help="Serotype")
     return parser.parse_args()
 
 
 if __name__ == "__main__":
     args = parse_args()
+    serotype = args.serotype
 
     df = pd.read_csv(args.df_path, index_col=0)
     query_energies = pd.read_csv(args.query_path, index_col=0)
