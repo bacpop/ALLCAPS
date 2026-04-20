@@ -15,6 +15,7 @@ plt.rcParams.update({
     "ps.usedistiller": "xpdf",  # or 'none' or 'ghostscript'
 })
 
+DEFAULT_FIGSIZE = (15, 15)
 
 def compute_per_class_f1(cm):
     """
@@ -47,7 +48,8 @@ def compute_per_class_f1(cm):
 
 
 def main(args):
-    plt.figure(figsize=(6, 5))
+    figsize = tuple(map(float, args.figsize.split(',')))
+    plt.figure(figsize=figsize)
     kde_lines = []  # List to store KDE line objects
     f1_scores_distributions = []  # List to store F1 score distributions
     print("Loading confusion matrices...")
@@ -59,13 +61,14 @@ def main(args):
 
         xs = np.linspace(0, 1, 200)
         kde = gaussian_kde(f1_scores)
-        ys = kde(xs)
+        n = len(f1_scores)
+        ys = kde(xs) * n
         line_obj = plt.plot(xs, ys, label=f"{cm_path}")[0]
         kde_lines.append(line_obj)
         plt.axvline(bal_acc, linestyle="--", color=line_obj.get_color(), alpha=0.8)
 
-    plt.xlabel("F1 Score"), plt.ylabel("Density")
-    plt.title("F1 Score distributions per analysis")
+    plt.xlabel("F1 Score"), plt.ylabel("Serotype Count")
+    plt.title("F1 Score distributions per Method")
     plt.gca().spines['top'].set_visible(False)
     plt.gca().spines['right'].set_visible(False)
     
@@ -100,6 +103,7 @@ def parse_args():
         "--output", default="f1_distributions.pdf",
         help="Where to save the resulting plot."
     )
+    parser.add_argument('--figsize', type=str, default=f"{DEFAULT_FIGSIZE[0]},{DEFAULT_FIGSIZE[1]}", help=f'Figure size as "width,height" (default: {DEFAULT_FIGSIZE})')
     args = parser.parse_args()
     
     if args.legend is not None:
