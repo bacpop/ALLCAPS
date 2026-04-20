@@ -6,8 +6,6 @@ from Bio import SeqIO
 
 from ..consts import RND_STATE, DEFAULT_LABEL_COLUMN
 
-ID_SEP = "__"
-
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Sample sequences from serogroups.")
@@ -19,7 +17,8 @@ def parse_args():
     parser.add_argument("--sample_size", type=int, default=None, help="Number of sequences to sample from each serogroup.")
     parser.add_argument("--sample_all", action="store_true", help="Fetch all sequences if set, ignoring sample size.")
     parser.add_argument("--serogroups", type=str, default=None, help="Comma-separated list of serogroups to sample from. If not provided, all serogroups will be sampled.")
-    
+    parser.add_argument("--id_column", type=str, default="ERR", help="Column name for the ID field in the labels file.")
+
     args = parser.parse_args()
     if not (args.fetch_fasta or args.embeddings):
         raise parser.error("Either --fetch_fasta or --embeddings must be provided.")
@@ -36,9 +35,12 @@ def parse_args():
 
 def main(args):
     serotype_column = DEFAULT_LABEL_COLUMN
-    id_sep = ID_SEP
+    id_column = args.id_column
+
     print("Loading data...")
-    labels = pd.read_csv(args.labels, sep="\t", index_col=0).drop_duplicates()  # TODO clean up labels
+    labels = pd.read_csv(args.labels, sep="\t" if args.labels.endswith('.tsv') else ",") \
+        .set_index(id_column) \
+        .drop_duplicates()  # TODO clean up labels
     if args.embeddings:
         X = np.load(args.embeddings)  # shape (N, D)
         is_X_npz = isinstance(X, np.lib.npyio.NpzFile)
@@ -56,8 +58,8 @@ def main(args):
     if args.fetch_fasta:
         print(f"Reading sequences from {args.sequences}...")
         for record in SeqIO.parse(args.sequences, "fasta"):
-            public_id = record.id.split(id_sep)[0]
-            id_mapping[public_id] = record
+            public_id = record.id
+            id_mapping[public_id.split("#")[0]] = record
     
     sampled_sequences = []
     sampled_ids = []  # Track sampled IDs for labels subset
@@ -74,9 +76,11 @@ def main(args):
             for idx in sampled_indices:
                 sampled_ids.append(idx)  # Track sampled ID
                 if args.fetch_fasta:
-                    record = id_mapping.get(idx, None)
+                    # contig_id = labels.loc[idx, 'Contig_ID']
+                    fasta_key = f"{idx}"  # + "#{contig_id}"
+                    record = id_mapping.get(fasta_key, None)
                     if record is None:
-                        print(f"Warning: Sequence for ID {idx} not found in the FASTA file.")
+                        print(f"Warning: Sequence for ID {fasta_key} not found in the FASTA file.")
                         continue
                     sampled_sequences.append(record)
                 else:
@@ -130,9 +134,11 @@ def main(args):
                 for idx in sampled_indices:
                     sampled_ids.append(idx)  # Track sampled ID
                     if args.fetch_fasta:
-                        record = id_mapping.get(idx, None)
+                        # contig_id = labels.loc[idx, 'Contig_ID']
+                        fasta_key = f"{idx}"  # + "#{contig_id}"
+                        record = id_mapping.get(fasta_key, None)
                         if record is None:
-                            print(f"Warning: Sequence for ID {idx} not found in the FASTA file.")
+                            print(f"Warning: Sequence for ID {fasta_key} not found in the FASTA file.")
                             continue
                         sampled_sequences.append(record)
                     else:
@@ -155,6 +161,7 @@ def main(args):
                             "Serotype": sg,
                             "Embedding": embedding
                         })
+    assert sampled_sequences, "No sequences were sampled. Please check your input data and sampling parameters."
     print(f"Sampled {len(sampled_sequences)} sequences from {len(serogroups)} serogroup(s).")
 
     # Save sampled sequences
