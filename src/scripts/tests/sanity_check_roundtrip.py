@@ -121,17 +121,16 @@ def run_npz_eval_path(
 
     X = np.load(npz_path, allow_pickle=True)
     labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
+    labels_df["sample_id"] = get_sample_id(labels_df)
     labels_df["sample_key"] = (
         labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl")
         + DEFAULT_SEP
-        + get_sample_id(labels_df)
+        + labels_df["sample_id"]
     )
-    # Build public_id → sample_key map
-    labels_df["public_id"] = labels_df.index
 
     rows = {}
     for _, row in tqdm(labels_df.iterrows(), desc="NPZ eval path", total=len(labels_df)):
-        pid = row["public_id"]
+        pid = row["sample_id"]
         if pid not in record_ids:
             continue
         key = row["sample_key"]
@@ -295,7 +294,7 @@ def main():
                 f"logit_cos={row['logit_cosine_sim']:.4f}, emb_cos={row['embedding_cosine_sim']:.4f}"
             )
 
-    report_text = "\n".join(report_lines)
+    report_text = "\n".join(report_lines) + "\n"
     print(report_text)
 
     report_path = os.path.join(args.output_dir, "roundtrip_report.txt")
