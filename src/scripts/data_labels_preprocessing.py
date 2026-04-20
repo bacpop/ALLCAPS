@@ -60,6 +60,7 @@ def cleanup_serotype(value):
         '23B1': "23B",
         '24B/24C/24F': "Serogroup 24",
         '33A/33E/33F': "Serogroup 33",
+        '33F(33F-1A)': "33F",
         '33F(33F-1B)': "33F",
         'POSSIBLE 6A': "6A",
         'POSSIBLE 6C': "6C",
@@ -67,8 +68,8 @@ def cleanup_serotype(value):
         'POSSIBLE 6E': "6E",
         "SEROGROUP 24": "Serogroup 24",
         "SEROGROUP 33": "Serogroup 33",
-        "24": "Serogroup 24",  # <-- TODO rename "24"s to "24F"?
-        "33": "Serogroup 33",  # <-- TODO rename "33"s to "33F"?
+        "24": "Serogroup 24",
+        "33": "Serogroup 33",
         # "24A": "Serogroup 24",
         # "24F": "Serogroup 24",
         # '33A/33F': "?",

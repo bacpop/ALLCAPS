@@ -1,26 +1,29 @@
 """
-This script loads cleaned serotype labels and integrates them with contig IDs and capsule presence.
-It takes a cleaned labels TSV file and outputs a final metadata file with serotype and contig IDs.
+Post-process metadata after embedding: keep only samples that have
+a matching .npy embedding file, drop the rest.
+
+Expects a *flat* embedding directory (all .npy files in one folder,
+no cbl/non-cbl subdirs).  The input metadata should already have clean
+labels (via data_labels_preprocessing or data_train_test_split).
 """
 
-# Example usage: python src/scripts/labels_postprocessing.py --clean_labels data/GPS_All_clean_labels.tsv --output_dir results/
 import os
 import pandas as pd
 import argparse
 from pathlib import Path
 
-from .consts import DEFAULT_NONCBL_LABEL, CONTIG_SEP, DEFAULT_LABEL_COLUMN
+from .consts import CONTIG_SEP
 from .data_labels_preprocessing import preprocess_metadata
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Incorporate cleaned serotype labels and contig IDs into final metadata",
+        description="Filter metadata to samples that survived embedding",
     )
-    parser.add_argument("--clean_labels", required=True, help="Path to cleaned labels TSV file")
-    parser.add_argument("--output_dir", required=True, help="Path for output files")
+    parser.add_argument("--clean_labels", required=True, help="Path to pre-processed metadata CSV/TSV")
     parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
-    parser.add_argument("--label_column", type=str, default=DEFAULT_LABEL_COLUMN, help="Column name for sample IDs in labels file")
+    parser.add_argument("--embedding_dir", required=True, help="Path to flat directory of .npy embedding files")
+    parser.add_argument("--output_dir", required=True, help="Directory to write final_metadata.csv")
 
     args = parser.parse_args()
     try:
@@ -29,61 +32,42 @@ def main():
         print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
         args.skip_labels = []
 
-    label_column = args.label_column
-    non_cbl_label = DEFAULT_NONCBL_LABEL
-
-    labels = pd.read_csv(args.clean_labels)
-    print(f"Loaded {len(labels)} cleaned label entries")
-    labels = preprocess_metadata(
+    labels = pd.read_csv(
+        args.clean_labels,
+        sep="\t" if args.clean_labels.endswith(".tsv") else ",",
+    )
+    labels = preprocess_metadata(  # The cleaning part is redundant
         labels,
         skip_labels=args.skip_labels or None,
     )
     print(f"After preprocessing: {len(labels)} entries, {labels.Serotype.nunique()} serotypes")
+    print(f"Loaded {len(labels)} metadata entries")
 
-    # Create output directory if it doesn't exist
     output_path = Path(args.output_dir)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
 
-    # Add capsule presence column and contig id column after saving chunked embeddings
-    results = pd.DataFrame(columns=["Public_ID", "Contig_ID", "Serotype", "Is_capsule"])
-    for is_capsule, subdir in zip(
-        [1, 0], ["base_embeddings_chunked/cbl", "base_embeddings_chunked/non-cbl"]
-    ):
-        names = [f.split(".")[0] for f in os.listdir(output_path / subdir) if f.endswith(".npy")]
-        assert names, f"The {subdir} is empty"
-        public_ids, contig_ids = zip(*[name.split(CONTIG_SEP) for name in names])
-        if is_capsule:
-            serotypes_df = pd.DataFrame({label_column: public_ids, "Contig_ID": contig_ids}) \
-                .merge(labels[[label_column, "Serotype"]].drop_duplicates(), on=label_column, how="left")
-            if args.skip_labels:
-                print(f"Entries with skipped labels in capsule data: {serotypes_df.Serotype.isin(args.skip_labels).sum()}")
-                serotypes_df = serotypes_df.dropna(subset=["Serotype"])
-                public_ids = serotypes_df[label_column].values
-                contig_ids = serotypes_df.Contig_ID.values
-            serotypes = serotypes_df.Serotype.values
-            assert serotypes_df.Serotype.isnull().sum() == 0, "Some capsule entries are missing serotype labels"
-        else:
-            serotypes = [non_cbl_label] * len(public_ids)
-        results = pd.concat(
-            [
-                results,
-                pd.DataFrame(
-                    {
-                        "Public_ID": public_ids,
-                        "Contig_ID": contig_ids,
-                        "Serotype": serotypes,
-                        "Is_capsule": [is_capsule] * len(public_ids),
-                    }
-                ),
-            ],
-            ignore_index=True,
-        )
+    embedding_dir = Path(args.embedding_dir)
+    names = [f.split(".")[0] for f in os.listdir(embedding_dir) if f.endswith(".npy")]
+    assert names, f"No .npy files found in {embedding_dir}"
 
-    output_file = output_path / "final_metadata.tsv"
-    results.to_csv(output_file, sep="\t", index=False)
-    print(f"Final metadata with serotypes and contig IDs saved to {output_file}")
-    print(f"Total entries in final metadata: {len(results)}")
-    print(f"Unique serotypes in final metadata: {results.Serotype.nunique()}")
+    labels["file_name"] = labels["Public_ID"].astype(str) + CONTIG_SEP + labels["Contig_ID"].astype(str)
+
+    embedded = set(names)
+    in_meta = set(labels["file_name"])
+    missing_embeddings = in_meta - embedded
+    missing_metadata = embedded - in_meta
+    if missing_embeddings:
+        print(f"  {len(missing_embeddings)} metadata entries have no embedding file (dropped)")
+    if missing_metadata:
+        print(f"  {len(missing_metadata)} embedding files have no metadata entry (ignored)")
+
+    labels = labels[labels["file_name"].isin(embedded)]
+    labels = labels.drop(columns=["file_name"])
+
+    output_file = output_path / "final_metadata.csv"
+    labels.to_csv(output_file, index=False)
+    print(f"Final metadata saved to {output_file}")
+    print(f"  {len(labels)} entries, {labels.Serotype.nunique()} serotypes")
 
 
 if __name__ == "__main__":
