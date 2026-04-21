@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
         help="Path to embeddings .npz (from infer_transformer)",
     )
     parser.add_argument(
-        "--labels", required=True, help="Path to labels TSV (e.g., final_metadata.tsv)"
+        "--labels", required=True, help="Path to labels (e.g., final_metadata.csv)"
     )
     parser.add_argument("--output", required=True, help="Path to write TXT report")
     parser.add_argument(
@@ -71,7 +71,7 @@ def load_embeddings_and_labels(
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
     missing_label = args.model_params.get("missing_label", DEFAULT_MISSING_LABEL)
 
-    labels_df = pd.read_csv(args.labels, sep="\t", index_col=0)
+    labels_df = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
     labels_df["Serotype"] = labels_df[label_column].fillna(missing_label)
 
     npz = np.load(args.embeddings, allow_pickle=True)
