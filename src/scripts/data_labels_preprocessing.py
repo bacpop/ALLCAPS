@@ -4,15 +4,29 @@ It takes a raw labels TSV file and outputs a cleaned version with standardized s
 """
 
 # Example usage: python src/scripts/labels_preprocessing.py --metadata data/monocle-metadata.tsv --output_dir results/
+import os
 import re
 import pandas as pd
 import argparse
 from pathlib import Path
+from Bio import SeqIO
 
-from .consts import NON_TYPEABLE, DEFAULT_LABEL_COLUMN
+from .consts import (
+    NON_TYPEABLE,
+    DEFAULT_LABEL_COLUMN,
+    DEFAULT_ID_COLUMN,
+    DEFAULT_CONTIG_COLUMN,
+    DEFAULT_NONCBL_LABEL,
+    CONTIG_SEP,
+)
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
-def read_monocle_metadata(file_path, label_column=DEFAULT_LABEL_COLUMN):
+def read_monocle_metadata(
+    file_path, label_column=DEFAULT_LABEL_COLUMN, id_column=DEFAULT_ID_COLUMN
+):
     """
     Reads the monocle metadata TSV file into a pandas DataFrame.
 
@@ -23,9 +37,9 @@ def read_monocle_metadata(file_path, label_column=DEFAULT_LABEL_COLUMN):
     Returns:
         pandas DataFrame with metadata
     """
-    selected_columns = ["Sample_name", "ERR", "In_silico_serotype"]
+    selected_columns = ["ERR", "In_silico_serotype"]
     df = pd.read_csv(file_path)[selected_columns]
-    df = df.rename(columns={"In_silico_serotype": label_column})
+    df = df.rename(columns={"In_silico_serotype": label_column, "ERR": id_column})
     return df
 
 
@@ -41,31 +55,31 @@ def cleanup_serotype(value):
     """
 
     serotype_mapping = {
-        '6A(6A-I)': "6A",
-        '6A(6A-II)': "6A",
-        '6A(6A-III)': "6A",
-        '6A(6A-IV)': "6A",
-        '6B(6B-I)': "6B",
-        '6E(6B)': "6E",
-        '6E(6A)': "6E",
-        '11A(11F_LIKE)': "11A",
-        '11A/11B/11C/11D/11E/11F/11F_LIKE': "11",
-        '19A(19A-I/19A-II)': "19A",
-        '19A(19A-I)': "19A",
-        '19A(19A-II)': "19A",
-        '19F(19AF)': "19F",
-        '19F(19F-II)': "19F",
-        '19F(19F-III)': "19F",
-        '23B(23B1)': "23B",
-        '23B1': "23B",
-        '24B/24C/24F': "Serogroup 24",
-        '33A/33E/33F': "Serogroup 33",
-        '33F(33F-1A)': "33F",
-        '33F(33F-1B)': "33F",
-        'POSSIBLE 6A': "6A",
-        'POSSIBLE 6C': "6C",
-        'POSSIBLE 6D': "6D",
-        'POSSIBLE 6E': "6E",
+        "6A(6A-I)": "6A",
+        "6A(6A-II)": "6A",
+        "6A(6A-III)": "6A",
+        "6A(6A-IV)": "6A",
+        "6B(6B-I)": "6B",
+        "6E(6B)": "6E",
+        "6E(6A)": "6E",
+        "11A(11F_LIKE)": "11A",
+        "11A/11B/11C/11D/11E/11F/11F_LIKE": "11",
+        "19A(19A-I/19A-II)": "19A",
+        "19A(19A-I)": "19A",
+        "19A(19A-II)": "19A",
+        "19F(19AF)": "19F",
+        "19F(19F-II)": "19F",
+        "19F(19F-III)": "19F",
+        "23B(23B1)": "23B",
+        "23B1": "23B",
+        "24B/24C/24F": "Serogroup 24",
+        "33A/33E/33F": "Serogroup 33",
+        "33F(33F-1A)": "33F",
+        "33F(33F-1B)": "33F",
+        "POSSIBLE 6A": "6A",
+        "POSSIBLE 6C": "6C",
+        "POSSIBLE 6D": "6D",
+        "POSSIBLE 6E": "6E",
         "SEROGROUP 24": "Serogroup 24",
         "SEROGROUP 33": "Serogroup 33",
         "24": "Serogroup 24",
@@ -102,7 +116,7 @@ def cleanup_serotype(value):
 
     if value in untypables:
         return NON_TYPEABLE
-    
+
     if value in WHITELIST:
         return value
 
@@ -122,7 +136,9 @@ def cleanup_serotype(value):
 
     # If still irrelevant, mark as Non-typeable
     if not re.match(r"^[A-Z0-9/]+$", value):
-        print(f"Warning: Unrecognized serotype format '{value}', marking as Non-typeable")
+        logger.warning(
+            "Unrecognized serotype format '%s', marking as Non-typeable", value
+        )
         return NON_TYPEABLE
 
     return value
@@ -160,51 +176,155 @@ def process_labels(raw_path, clean_path):
     Returns:
         Cleaned pandas DataFrame
     """
-    print(f"Loading raw labels from {raw_path}")
+    logger.info("Loading raw labels from %s", raw_path)
     raw_df = read_monocle_metadata(raw_path)
-    print(f"Loaded {len(raw_df)} raw label entries")
+    logger.info("Loaded %d raw label entries", len(raw_df))
 
     original_serotypes = raw_df.Serotype.unique().tolist()
-    print(f"Found {len(original_serotypes)} unique serotypes")
+    logger.info("Found %d unique serotypes", len(original_serotypes))
 
-    print("Cleaning serotypes...")
+    logger.info("Cleaning serotypes...")
     raw_df = preprocess_metadata(raw_df)
 
     cleaned_serotypes = raw_df.Serotype.unique().tolist()
-    print(f"After cleaning: {len(cleaned_serotypes)} unique serotypes")
-    print(f"The removed serotypes: {set(original_serotypes) - set(cleaned_serotypes)}")
-    print(f"Saving cleaned labels to {clean_path}")
+    logger.info("After cleaning: %d unique serotypes", len(cleaned_serotypes))
+    logger.info(
+        "The removed serotypes: %s", set(original_serotypes) - set(cleaned_serotypes)
+    )
+    logger.info("Saving cleaned labels to %s", clean_path)
     raw_df.to_csv(clean_path, index=False)
 
     return raw_df
 
 
-def main():
+def parse_args():
     parser = argparse.ArgumentParser(
         description="Clean and standardize GPS metadata and serotype labels from raw labels file",
     )
 
     parser.add_argument("--metadata", required=True, help="Path to raw labels TSV file")
     parser.add_argument("--output_dir", required=True, help="Path for output files")
+    parser.add_argument(
+        "--cbl-fasta",
+        required=True,
+        help="Path to FASTA file containing CBL contigs for appending to metadata",
+    )
+    parser.add_argument(
+        "--noncbl-fasta",
+        required=True,
+        help="Path to FASTA file containing non-CBL contigs for appending to metadata",
+    )
 
     args = parser.parse_args()
 
+    if not os.path.isfile(args.metadata):
+        raise FileNotFoundError(f"Metadata file not found: {args.metadata}")
+    if not os.path.isfile(args.cbl_fasta):
+        raise FileNotFoundError(f"CBL FASTA file not found: {args.cbl_fasta}")
+    if not os.path.isfile(args.noncbl_fasta):
+        raise FileNotFoundError(f"Non-CBL FASTA file not found: {args.noncbl_fasta}")
+
+    return args
+
+
+def read_fasta_ids(fasta_path):
+    """Return the list of record IDs from a FASTA file (headers only)."""
+    return [record.id for record in SeqIO.parse(fasta_path, "fasta")]
+
+
+def build_contig_metadata(cbl_fasta, noncbl_fasta, clean_labels):
+    """Combine CBL and non-CBL FASTA record IDs with cleaned serotype labels.
+
+    cbl record id format:     ERR1788086#7                 (Public_ID#Contig_ID)
+    non-cbl record id format: NONCBL#ERR1788086#7          (NONCBL#Public_ID#Contig_ID)
+
+    Returns a DataFrame with columns: Public_ID, Contig_ID, Serotype, Is_capsule.
+    For non-CBLs, the NONCBL# prefix is retained on Public_ID so downstream
+    lookups against per-contig artifacts (e.g. embedding files) still match.
+    """
+    cbl_ids = read_fasta_ids(cbl_fasta)
+    noncbl_ids = read_fasta_ids(noncbl_fasta)
+    logger.info(
+        "Loaded %d CBL and %d non-CBL FASTA records", len(cbl_ids), len(noncbl_ids)
+    )
+
+    cbl_parts = [rid.split(CONTIG_SEP, 1) for rid in cbl_ids]
+    if any(len(p) != 2 for p in cbl_parts):
+        raise ValueError(
+            f"CBL record IDs must have format Public_ID{CONTIG_SEP}Contig_ID"
+        )
+    cbl_df = pd.DataFrame(cbl_parts, columns=[DEFAULT_ID_COLUMN, DEFAULT_CONTIG_COLUMN])
+    cbl_df = cbl_df.merge(
+        clean_labels[[DEFAULT_ID_COLUMN, DEFAULT_LABEL_COLUMN]].drop_duplicates(),
+        on=DEFAULT_ID_COLUMN,
+        how="left",
+    )
+    missing = cbl_df[DEFAULT_LABEL_COLUMN].isna().sum()
+    if missing:
+        logger.warning("%d CBL contigs dropped (no matching cleaned label)", missing)
+        cbl_df = cbl_df.dropna(subset=[DEFAULT_LABEL_COLUMN])
+    cbl_df["Is_capsule"] = 1
+
+    noncbl_parts = []
+    for rid in noncbl_ids:
+        pieces = rid.split(CONTIG_SEP)
+        if len(pieces) < 3:
+            raise ValueError(
+                f"Non-CBL record ID '{rid}' must have format NONCBL{CONTIG_SEP}Public_ID{CONTIG_SEP}Contig_ID"
+            )
+        prefix, public_id, contig_id = (
+            pieces[0],
+            CONTIG_SEP.join(pieces[1:-1]),
+            pieces[-1],
+        )
+        noncbl_parts.append((f"{prefix}{CONTIG_SEP}{public_id}", contig_id))
+    noncbl_df = pd.DataFrame(
+        noncbl_parts, columns=[DEFAULT_ID_COLUMN, DEFAULT_CONTIG_COLUMN]
+    )
+    noncbl_df[DEFAULT_LABEL_COLUMN] = DEFAULT_NONCBL_LABEL
+    noncbl_df["Is_capsule"] = 0
+
+    columns = [
+        DEFAULT_ID_COLUMN,
+        DEFAULT_CONTIG_COLUMN,
+        DEFAULT_LABEL_COLUMN,
+        "Is_capsule",
+    ]
+    return pd.concat([cbl_df[columns], noncbl_df[columns]], ignore_index=True)
+
+
+def main(args):
     # Create output directory if it doesn't exist
     output_path = Path(args.output_dir)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.mkdir(parents=True, exist_ok=True)
 
     # Process labels
-    print("Processing raw labels...")
+    logger.info("Processing raw labels...")
     result = process_labels(args.metadata, output_path / "cleaned_labels.csv")
 
-    print("\nSummary of cleaned serotypes:")
+    logger.info("Summary of cleaned serotypes:")
     serotype_counts = result.Serotype.value_counts().to_dict()
     for serotype in sorted(serotype_counts.keys()):
-        print(f"\t- {serotype}:\t {serotype_counts[serotype]}")
-    print(f"\nTotal entries: {len(result)}")
-    print(f"Unique serotypes: {result.Serotype.nunique()}")
-    print("Processing completed successfully!")
+        logger.info("\t- %s:\t %d", serotype, serotype_counts[serotype])
+    logger.info("Total entries: %d", len(result))
+    logger.info("Unique serotypes: %d", result.Serotype.nunique())
+
+    logger.info("Building final contig-level metadata from FASTA record IDs...")
+    final_df = build_contig_metadata(args.cbl_fasta, args.noncbl_fasta, result)
+
+    final_file = output_path / "initial_metadata.csv"
+    final_df.to_csv(final_file, index=False)
+    logger.info("Early clean metadata saved to %s", final_file)
+    logger.info(
+        "Early metadata: %d entries (%d CBL, %d non-CBL), %d unique serotypes",
+        len(final_df),
+        int((final_df["Is_capsule"] == 1).sum()),
+        int((final_df["Is_capsule"] == 0).sum()),
+        final_df[DEFAULT_LABEL_COLUMN].nunique(),
+    )
+
+    logger.info("Processing completed successfully!")
 
 
 if __name__ == "__main__":
-    main()
+    main(parse_args())
