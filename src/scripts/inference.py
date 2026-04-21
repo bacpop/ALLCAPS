@@ -36,8 +36,11 @@ from .consts import (
     DEFAULT_SEP,
     DEFAULT_STRIDE_RATIO,
 )
+from .logging_config import get_logger
 from .models import ModelRegistry
 from .utils import chunk_sequence, embed_chunks, get_sample_id
+
+logger = get_logger(__name__)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -135,9 +138,9 @@ def load_base_model(
 
     device = torch.device(device)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForMaskedLM.from_pretrained(
-        model_name, trust_remote_code=True
-    ).to(device)
+    model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True).to(
+        device
+    )
     model.eval()
 
     mml = getattr(tokenizer, "model_max_length", chunk_size)
@@ -193,7 +196,9 @@ def embed_sequence(
     max_length: int = DEFAULT_MAX_LEN,
     inference_mode: str = "eval",
     scan_step: int = 2000,
-) -> Tuple[List[np.ndarray], List[np.ndarray], Optional[List[np.ndarray]], List[np.ndarray]]:
+) -> Tuple[
+    List[np.ndarray], List[np.ndarray], Optional[List[np.ndarray]], List[np.ndarray]
+]:
     """Canonical  raw DNA → (cbl_logits, sero_logits, geno_logits|None, z).
 
     This is the **single source of truth** for converting a raw nucleotide
@@ -379,7 +384,7 @@ def parse_model_params_json(raw: str) -> dict:
         d = json.loads(raw)
         return d if isinstance(d, dict) else {}
     except json.JSONDecodeError:
-        print("Error parsing model parameters JSON string.")
+        logger.error("Error parsing model parameters JSON string.")
         return {}
 
 

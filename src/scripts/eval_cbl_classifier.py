@@ -10,12 +10,16 @@ import matplotlib.pyplot as plt
 
 from .models import ModelRegistry
 from .consts import DEFAULT_SEP, DEFAULT_BATCH_SIZE, DEFAULT_HEAD_MODEL
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def main(args):
     sep = args.model_params.get("sep", DEFAULT_SEP)
     head_model = args.model_params.get("head_model", DEFAULT_HEAD_MODEL)
 
-    print(f"Loading embeddings from: {args.embeddings}")
+    logger.info("Loading embeddings from: %s", args.embeddings)
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
     labels = list(
         map(lambda sid: sid.split(sep), X.keys())
@@ -29,22 +33,22 @@ def main(args):
     y = labels["Capsule_label"].values
 
     device = torch.device(args.device)
-    print(f"Loading model from: {args.model}")
+    logger.info("Loading model from: %s", args.model)
     model_save_dict = torch.load(args.model, map_location=device)
-    model_config = model_save_dict['model_config']
-    num_serotypes = model_save_dict['num_serotypes']
-    
-    print(f"Model configuration: {model_config}")
-    print(f"Number of serotypes: {num_serotypes}")
-    
+    model_config = model_save_dict["model_config"]
+    num_serotypes = model_save_dict["num_serotypes"]
+
+    logger.info("Model configuration: %s", model_config)
+    logger.info("Number of serotypes: %d", num_serotypes)
+
     # Initialize model with saved configuration
-    model = ModelRegistry.get_model_class(head_model) \
-        .from_config(model_config) \
-        .to(device)
-    model.load_state_dict(model_save_dict['model_state_dict'])
+    model = (
+        ModelRegistry.get_model_class(head_model).from_config(model_config).to(device)
+    )
+    model.load_state_dict(model_save_dict["model_state_dict"])
     model.eval()
 
-    print("Running inference...")
+    logger.info("Running inference...")
     all_logits, all_probs = [], []
     with torch.no_grad():
         for i in tqdm(range(0, len(X), args.batch_size)):
@@ -80,9 +84,8 @@ def main(args):
     plt.savefig(args.output.replace(".txt", "_roc.pdf"))
     plt.close()
 
-    print("Classification report:")
-    print(clf_report)
-    print("F1 score (weighted):", f1)
+    logger.info("Classification report:\n%s", clf_report)
+    logger.info("F1 score (weighted): %s", f1)
     with open(args.output, "w") as f:
         f.write("Classification report:\n")
         f.write(clf_report)
@@ -108,12 +111,12 @@ if __name__ == "__main__":
     try:
         args.model_params = json.loads(args.model_params)
         if not isinstance(args.model_params, dict):
-            print("Model parameters should be a JSON object.")
+            logger.warning("Model parameters should be a JSON object.")
             args.model_params = {}
     except json.JSONDecodeError:
-        print("Error parsing model parameters JSON string.")
+        logger.error("Error parsing model parameters JSON string.")
         args.model_params = {}
     finally:
-        print("Model parameters:", args.model_params)
+        logger.info("Model parameters: %s", args.model_params)
 
     main(args)

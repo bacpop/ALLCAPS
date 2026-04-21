@@ -51,6 +51,10 @@ import numpy as np
 import torch
 from torch.utils.data import Dataset
 
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
+
 # ═══════════════════════════════════════════════════════════════
 #  Constants
 # ═══════════════════════════════════════════════════════════════
@@ -279,9 +283,7 @@ class EmbeddingAugmentor:
     spec_augment_freq: float = 0.0
     spec_augment_width: int = 16
 
-    def __call__(
-        self, embedding: torch.Tensor, training: bool = True
-    ) -> torch.Tensor:
+    def __call__(self, embedding: torch.Tensor, training: bool = True) -> torch.Tensor:
         """Augment a (L, D) embedding tensor in-place.
 
         Returns the augmented tensor (same shape).
@@ -464,9 +466,13 @@ def main():
 
     n_orig = len(records_in)
     n_out = len(records_out)
-    print(
-        f"Wrote {n_out} records ({n_orig} originals × {args.n_augments} augments"
-        f"{' + originals' if args.include_original else ''}) → {args.output}"
+    logger.info(
+        "Wrote %d records (%d originals × %d augments%s) → %s",
+        n_out,
+        n_orig,
+        args.n_augments,
+        " + originals" if args.include_original else "",
+        args.output,
     )
 
 

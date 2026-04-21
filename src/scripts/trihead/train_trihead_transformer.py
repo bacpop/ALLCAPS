@@ -14,20 +14,40 @@ from torch.utils.data import DataLoader
 from sklearn.model_selection import StratifiedKFold
 
 from ..models import TransformerTriHeadLR, DatasetRegistry
-from ..utils import supervised_contrastive_loss, hierarchical_contrastive_loss, map_serotype_to_group, collate_fn, classify_label_type
+from ..utils import (
+    supervised_contrastive_loss,
+    hierarchical_contrastive_loss,
+    map_serotype_to_group,
+    collate_fn,
+    classify_label_type,
+)
 from ..data_augmentation import EmbeddingAugmentor, AugmentedChunkedDataset
+from ..logging_config import get_logger
 
 from ..consts import (
-    RND_STATE, DEFAULT_EPOCHS, DEFAULT_BATCH_SIZE, DEFAULT_LR,
-    DEFAULT_KFOLDS, DEFAULT_TEMPERATURE, DEFAULT_WEIGHT_FINE,
-    DEFAULT_WEIGHT_COARSE, DEFAULT_NUM_LAYERS, DEFAULT_NHEAD,
-    DEFAULT_OUTPUT_DIM, DEFAULT_EMBEDDING_DIM, CONTIG_SEP,
-    DEFAULT_MISSING_LABEL, DEFAULT_LABEL_COLUMN,
-    DEFAULT_EARLY_STOPPING, DEFAULT_CONTRASTIVE_LOSS_RATIO,
-    MIN_SEROTYPE_COUNT
+    RND_STATE,
+    DEFAULT_EPOCHS,
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_LR,
+    DEFAULT_KFOLDS,
+    DEFAULT_TEMPERATURE,
+    DEFAULT_WEIGHT_FINE,
+    DEFAULT_WEIGHT_COARSE,
+    DEFAULT_NUM_LAYERS,
+    DEFAULT_NHEAD,
+    DEFAULT_OUTPUT_DIM,
+    DEFAULT_EMBEDDING_DIM,
+    CONTIG_SEP,
+    DEFAULT_MISSING_LABEL,
+    DEFAULT_LABEL_COLUMN,
+    DEFAULT_EARLY_STOPPING,
+    DEFAULT_CONTRASTIVE_LOSS_RATIO,
+    MIN_SEROTYPE_COUNT,
 )
 
 from collections import Counter
+
+logger = get_logger(__name__)
 
 EPS = 1e-9
 ALPHA_SERO = 2
@@ -65,62 +85,119 @@ DEFAULT_DATASET_OBJECT = "contrastive_chunked"
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--embedding_dir", required=True, help="Directory containing chunked embeddings in npy format.")
+    parser.add_argument(
+        "--embedding_dir",
+        required=True,
+        help="Directory containing chunked embeddings in npy format.",
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--labels", required=True)
     parser.add_argument("--epochs", type=int, default=DEFAULT_EPOCHS)
     parser.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=DEFAULT_LR)
-    parser.add_argument("--model_params", type=str, default="{}",
-                        help="JSON string of model parameters (output_dim, num_layers, nhead, alpha, temperature, etc.)")
+    parser.add_argument(
+        "--model_params",
+        type=str,
+        default="{}",
+        help="JSON string of model parameters (output_dim, num_layers, nhead, alpha, temperature, etc.)",
+    )
     parser.add_argument("--labeled_only", action="store_true")
-    parser.add_argument("--skip_labels", type=str, default="",
-                        help="Comma-separated list of labels to skip in training.")
-    parser.add_argument("--hierarchical_loss", action="store_true",
-                        help="Use weighted (coarse, fine) labels for training.")
+    parser.add_argument(
+        "--skip_labels",
+        type=str,
+        default="",
+        help="Comma-separated list of labels to skip in training.",
+    )
+    parser.add_argument(
+        "--hierarchical_loss",
+        action="store_true",
+        help="Use weighted (coarse, fine) labels for training.",
+    )
     parser.add_argument("--early_stopping", type=int, default=DEFAULT_EARLY_STOPPING)
     # Embedding-level augmentation (applied on-the-fly during training only)
-    parser.add_argument("--aug_noise_std", type=float, default=0.0,
-                        help="Gaussian noise std for embedding augmentation (0 = disabled).")
-    parser.add_argument("--aug_chunk_dropout", type=float, default=0.0,
-                        help="Chunk dropout probability for embedding augmentation (0 = disabled).")
-    parser.add_argument("--aug_spec_freq", type=float, default=0.0,
-                        help="SpecAugment frequency masking probability (0 = disabled).")
-    parser.add_argument("--aug_spec_width", type=int, default=16,
-                        help="SpecAugment max mask width in feature dimensions.")
-    parser.add_argument("--aug_n_views", type=int, default=1,
-                        help="Number of augmented views per sample (1 = original only, 2+ = contrastive views).")
+    parser.add_argument(
+        "--aug_noise_std",
+        type=float,
+        default=0.0,
+        help="Gaussian noise std for embedding augmentation (0 = disabled).",
+    )
+    parser.add_argument(
+        "--aug_chunk_dropout",
+        type=float,
+        default=0.0,
+        help="Chunk dropout probability for embedding augmentation (0 = disabled).",
+    )
+    parser.add_argument(
+        "--aug_spec_freq",
+        type=float,
+        default=0.0,
+        help="SpecAugment frequency masking probability (0 = disabled).",
+    )
+    parser.add_argument(
+        "--aug_spec_width",
+        type=int,
+        default=16,
+        help="SpecAugment max mask width in feature dimensions.",
+    )
+    parser.add_argument(
+        "--aug_n_views",
+        type=int,
+        default=1,
+        help="Number of augmented views per sample (1 = original only, 2+ = contrastive views).",
+    )
     args = parser.parse_args()
 
     try:
         args.model_params = json.loads(args.model_params)
         if not isinstance(args.model_params, dict):
-            print("Model parameters should be a JSON object.")
+            logger.warning("Model parameters should be a JSON object.")
             args.model_params = {}
     except json.JSONDecodeError:
-        print("Error parsing model parameters JSON string.")
+        logger.error("Error parsing model parameters JSON string.")
         args.model_params = {}
     finally:
-        print("Model parameters:", args.model_params)
+        logger.info("Model parameters: %s", args.model_params)
 
     try:
-        args.skip_labels = [label.strip() for label in args.skip_labels.split(",") if label.strip()]
+        args.skip_labels = [
+            label.strip() for label in args.skip_labels.split(",") if label.strip()
+        ]
     except ValueError:
-        print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
+        logger.warning(
+            "Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips."
+        )
         args.skip_labels = []
 
     return args
 
 
-def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, contrastive_loss_fn, alpha, temperature, serotype_to_idx, genogroup_to_idx):
+def train_one_epoch(
+    model,
+    loader,
+    optimizer,
+    ce_loss_fn,
+    serotype_loss_fn,
+    genogroup_loss_fn,
+    contrastive_loss_fn,
+    alpha,
+    temperature,
+    serotype_to_idx,
+    genogroup_to_idx,
+):
     model.train()
-    total_loss, ce_loss, serotype_loss, genogroup_loss, contrastive_loss = 0.0, 0.0, 0.0, 0.0, 0.0
+    total_loss, ce_loss, serotype_loss, genogroup_loss, contrastive_loss = (
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+    )
     for batch in loader:
-        capsule_label = batch['is_capsule'].cuda()
-        serotype_label = batch['serotype']
-        serotype_known_batch = batch['serotype_known'].cuda()  # bool tensor
-        capsule_mask = (capsule_label == 1)
+        capsule_label = batch["is_capsule"].cuda()
+        serotype_label = batch["serotype"]
+        serotype_known_batch = batch["serotype_known"].cuda()  # bool tensor
+        capsule_mask = capsule_label == 1
         # Serotype loss: only capsulated AND resolved-serotype samples
         serotype_mask = capsule_mask & serotype_known_batch
 
@@ -135,7 +212,9 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
                 fine_labels.append(lbl)
                 coarse_labels.append(map_serotype_to_group(lbl))
 
-        cbl_logits, (serotype_logits, genogroup_logits), embeddings = model(batch['embedding'].cuda())
+        cbl_logits, (serotype_logits, genogroup_logits), embeddings = model(
+            batch["embedding"].cuda()
+        )
 
         # CBL classification loss
         ce_loss_val = ce_loss_fn(cbl_logits, capsule_label)
@@ -145,25 +224,50 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
         genogroup_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
         if serotype_mask.sum() > 0:
             serotype_indices = torch.tensor(
-                [serotype_to_idx[fine_labels[i]] for i in range(len(capsule_label)) if serotype_mask[i]],
-                device=ce_loss_val.device
+                [
+                    serotype_to_idx[fine_labels[i]]
+                    for i in range(len(capsule_label))
+                    if serotype_mask[i]
+                ],
+                device=ce_loss_val.device,
             )
-            serotype_loss_val = serotype_loss_fn(serotype_logits[serotype_mask], serotype_indices)
+            serotype_loss_val = serotype_loss_fn(
+                serotype_logits[serotype_mask], serotype_indices
+            )
 
         # Genogroup loss (all capsulated samples, including serogroup-only)
         if capsule_mask.sum() > 0:
             genogroup_indices = torch.tensor(
-                [genogroup_to_idx[coarse_labels[i]] for i in range(len(capsule_label)) if capsule_mask[i]],
-                device=ce_loss_val.device
+                [
+                    genogroup_to_idx[coarse_labels[i]]
+                    for i in range(len(capsule_label))
+                    if capsule_mask[i]
+                ],
+                device=ce_loss_val.device,
             )
-            genogroup_loss_val = genogroup_loss_fn(genogroup_logits[capsule_mask], genogroup_indices)
+            genogroup_loss_val = genogroup_loss_fn(
+                genogroup_logits[capsule_mask], genogroup_indices
+            )
 
         # Contrastive loss (all capsulated samples)
         contrastive_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
         if capsule_mask.sum() > 1:
-            contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+            contrastive_loss_val = contrastive_loss_fn(
+                embeddings[capsule_mask],
+                [
+                    serotype_label[i]
+                    for i in range(len(capsule_label))
+                    if capsule_mask[i]
+                ],
+                temperature,
+            )
 
-        loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + ALPHA_GENO * genogroup_loss_val + alpha * contrastive_loss_val
+        loss = (
+            ce_loss_val
+            + ALPHA_SERO * serotype_loss_val
+            + ALPHA_GENO * genogroup_loss_val
+            + alpha * contrastive_loss_val
+        )
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -174,17 +278,30 @@ def train_one_epoch(model, loader, optimizer, ce_loss_fn, serotype_loss_fn, geno
         genogroup_loss += genogroup_loss_val.item()
         contrastive_loss += contrastive_loss_val.item()
 
-    wandb.log({
-        "epoch_loss": total_loss / len(loader),
-        "epoch_ce_loss": ce_loss / len(loader),
-        "epoch_serotype_loss": serotype_loss / len(loader),
-        "epoch_genogroup_loss": genogroup_loss / len(loader),
-        "epoch_contrastive_loss": contrastive_loss / len(loader)
-    })
+    wandb.log(
+        {
+            "epoch_loss": total_loss / len(loader),
+            "epoch_ce_loss": ce_loss / len(loader),
+            "epoch_serotype_loss": serotype_loss / len(loader),
+            "epoch_genogroup_loss": genogroup_loss / len(loader),
+            "epoch_contrastive_loss": contrastive_loss / len(loader),
+        }
+    )
     return total_loss / len(loader)
 
 
-def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, contrastive_loss_fn, alpha, temperature, serotype_to_idx, genogroup_to_idx):
+def evaluate(
+    model,
+    loader,
+    ce_loss_fn,
+    serotype_loss_fn,
+    genogroup_loss_fn,
+    contrastive_loss_fn,
+    alpha,
+    temperature,
+    serotype_to_idx,
+    genogroup_to_idx,
+):
     model.eval()
     total_loss = 0.0
     correct_cbl = 0
@@ -195,10 +312,10 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
     total_genogroup = 0
     with torch.no_grad():
         for batch in loader:
-            capsule_label = batch['is_capsule'].cuda()
-            serotype_label = batch['serotype']
-            serotype_known_batch = batch['serotype_known'].cuda()
-            capsule_mask = (capsule_label == 1)
+            capsule_label = batch["is_capsule"].cuda()
+            serotype_label = batch["serotype"]
+            serotype_known_batch = batch["serotype_known"].cuda()
+            capsule_mask = capsule_label == 1
             serotype_mask = capsule_mask & serotype_known_batch
 
             coarse_labels = []
@@ -211,8 +328,10 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
                     fine_labels.append(lbl)
                     coarse_labels.append(map_serotype_to_group(lbl))
 
-            cbl_logits, (serotype_logits, genogroup_logits), embeddings = model(batch['embedding'].cuda())
-            
+            cbl_logits, (serotype_logits, genogroup_logits), embeddings = model(
+                batch["embedding"].cuda()
+            )
+
             # CBL classification loss
             ce_loss_val = ce_loss_fn(cbl_logits, capsule_label)
 
@@ -221,25 +340,50 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
             genogroup_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
             if serotype_mask.sum() > 0:
                 serotype_indices = torch.tensor(
-                    [serotype_to_idx[fine_labels[i]] for i in range(len(capsule_label)) if serotype_mask[i]],
-                    device=ce_loss_val.device
+                    [
+                        serotype_to_idx[fine_labels[i]]
+                        for i in range(len(capsule_label))
+                        if serotype_mask[i]
+                    ],
+                    device=ce_loss_val.device,
                 )
-                serotype_loss_val = serotype_loss_fn(serotype_logits[serotype_mask], serotype_indices)
+                serotype_loss_val = serotype_loss_fn(
+                    serotype_logits[serotype_mask], serotype_indices
+                )
 
             # Genogroup loss (all capsulated)
             if capsule_mask.sum() > 0:
                 genogroup_indices = torch.tensor(
-                    [genogroup_to_idx[coarse_labels[i]] for i in range(len(capsule_label)) if capsule_mask[i]],
-                    device=ce_loss_val.device
+                    [
+                        genogroup_to_idx[coarse_labels[i]]
+                        for i in range(len(capsule_label))
+                        if capsule_mask[i]
+                    ],
+                    device=ce_loss_val.device,
                 )
-                genogroup_loss_val = genogroup_loss_fn(genogroup_logits[capsule_mask], genogroup_indices)
+                genogroup_loss_val = genogroup_loss_fn(
+                    genogroup_logits[capsule_mask], genogroup_indices
+                )
 
             # Contrastive loss (all capsulated)
             contrastive_loss_val = torch.tensor(0.0, device=ce_loss_val.device)
             if capsule_mask.sum() > 1:
-                contrastive_loss_val = contrastive_loss_fn(embeddings[capsule_mask], [serotype_label[i] for i in range(len(capsule_label)) if capsule_mask[i]], temperature)
+                contrastive_loss_val = contrastive_loss_fn(
+                    embeddings[capsule_mask],
+                    [
+                        serotype_label[i]
+                        for i in range(len(capsule_label))
+                        if capsule_mask[i]
+                    ],
+                    temperature,
+                )
 
-            loss = ce_loss_val + ALPHA_SERO * serotype_loss_val + ALPHA_GENO * genogroup_loss_val + alpha * contrastive_loss_val
+            loss = (
+                ce_loss_val
+                + ALPHA_SERO * serotype_loss_val
+                + ALPHA_GENO * genogroup_loss_val
+                + alpha * contrastive_loss_val
+            )
             total_loss += loss.item()
 
             # CBL accuracy
@@ -251,32 +395,48 @@ def evaluate(model, loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, con
             if serotype_mask.sum() > 0:
                 _, predicted_serotype = torch.max(serotype_logits[serotype_mask], 1)
                 serotype_indices = torch.tensor(
-                    [serotype_to_idx[fine_labels[i]] for i in range(len(capsule_label)) if serotype_mask[i]],
-                    device=ce_loss_val.device
+                    [
+                        serotype_to_idx[fine_labels[i]]
+                        for i in range(len(capsule_label))
+                        if serotype_mask[i]
+                    ],
+                    device=ce_loss_val.device,
                 )
-                correct_serotype += (predicted_serotype == serotype_indices).sum().item()
+                correct_serotype += (
+                    (predicted_serotype == serotype_indices).sum().item()
+                )
                 total_serotype += serotype_indices.size(0)
 
             # Genogroup accuracy (all capsulated)
             if capsule_mask.sum() > 0:
                 _, predicted_genogroup = torch.max(genogroup_logits[capsule_mask], 1)
                 genogroup_indices = torch.tensor(
-                    [genogroup_to_idx[coarse_labels[i]] for i in range(len(capsule_label)) if capsule_mask[i]],
-                    device=ce_loss_val.device
+                    [
+                        genogroup_to_idx[coarse_labels[i]]
+                        for i in range(len(capsule_label))
+                        if capsule_mask[i]
+                    ],
+                    device=ce_loss_val.device,
                 )
-                correct_genogroup += (predicted_genogroup == genogroup_indices).sum().item()
+                correct_genogroup += (
+                    (predicted_genogroup == genogroup_indices).sum().item()
+                )
                 total_genogroup += genogroup_indices.size(0)
 
     cbl_accuracy = correct_cbl / total_cbl if total_cbl > 0 else 0.0
     serotype_accuracy = correct_serotype / total_serotype if total_serotype > 0 else 0.0
-    genogroup_accuracy = correct_genogroup / total_genogroup if total_genogroup > 0 else 0.0
-    
-    wandb.log({
-        "test_loss": total_loss / len(loader),
-        "cbl_accuracy": cbl_accuracy,
-        "serotype_accuracy": serotype_accuracy,
-        "genogroup_accuracy": genogroup_accuracy,
-    })
+    genogroup_accuracy = (
+        correct_genogroup / total_genogroup if total_genogroup > 0 else 0.0
+    )
+
+    wandb.log(
+        {
+            "test_loss": total_loss / len(loader),
+            "cbl_accuracy": cbl_accuracy,
+            "serotype_accuracy": serotype_accuracy,
+            "genogroup_accuracy": genogroup_accuracy,
+        }
+    )
     return total_loss / len(loader), cbl_accuracy, serotype_accuracy, genogroup_accuracy
 
 
@@ -298,8 +458,9 @@ def main(args):
     label_column = args.model_params.get("label_column", DEFAULT_LABEL_COLUMN)
 
     # ── Build embedding augmentor (training-only) ──
-    aug_enabled = (args.aug_noise_std > 0 or args.aug_chunk_dropout > 0
-                   or args.aug_spec_freq > 0)
+    aug_enabled = (
+        args.aug_noise_std > 0 or args.aug_chunk_dropout > 0 or args.aug_spec_freq > 0
+    )
     embedding_augmentor = None
     if aug_enabled:
         embedding_augmentor = EmbeddingAugmentor(
@@ -308,22 +469,37 @@ def main(args):
             spec_augment_freq=args.aug_spec_freq,
             spec_augment_width=args.aug_spec_width,
         )
-        print(f"Embedding augmentation enabled: noise_std={args.aug_noise_std}, "
-              f"chunk_dropout={args.aug_chunk_dropout}, spec_freq={args.aug_spec_freq}, "
-              f"spec_width={args.aug_spec_width}, n_views={args.aug_n_views}")
-    
-    print("Loading data...")
-    labels = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
-    labels['Serotype'] = labels[label_column].fillna(missing_label)
+        logger.info(
+            "Embedding augmentation enabled: noise_std=%s, chunk_dropout=%s, spec_freq=%s, spec_width=%s, n_views=%s",
+            args.aug_noise_std,
+            args.aug_chunk_dropout,
+            args.aug_spec_freq,
+            args.aug_spec_width,
+            args.aug_n_views,
+        )
 
-    indices = labels["Serotype"] != missing_label if args.labeled_only else np.ones(len(labels), dtype=bool)
+    logger.info("Loading data...")
+    labels = pd.read_csv(
+        args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ","
+    )
+    labels["Serotype"] = labels[label_column].fillna(missing_label)
+
+    indices = (
+        labels["Serotype"] != missing_label
+        if args.labeled_only
+        else np.ones(len(labels), dtype=bool)
+    )
     if args.skip_labels:
-        skip_indices = labels['Serotype'].isin(args.skip_labels)
-        print(f"Skipping labels: {args.skip_labels} accounting for {skip_indices.sum()} samples.")
+        skip_indices = labels["Serotype"].isin(args.skip_labels)
+        logger.info(
+            "Skipping labels: %s accounting for %d samples.",
+            args.skip_labels,
+            skip_indices.sum(),
+        )
         indices &= ~skip_indices
 
-    fine_labels = labels['Serotype'][indices].values.tolist()
-    coarse_labels = labels['Serotype'][indices].apply(map_serotype_to_group).tolist()
+    fine_labels = labels["Serotype"][indices].values.tolist()
+    coarse_labels = labels["Serotype"][indices].apply(map_serotype_to_group).tolist()
 
     # ── Classify each label as resolved serotype vs serogroup-only/compound ──
     label_types = [classify_label_type(lbl) for lbl in fine_labels]
@@ -332,84 +508,112 @@ def main(args):
     # Count how many serogroup-only and compound labels we found
     n_serogroup = sum(1 for lt in label_types if lt == "serogroup_only")
     n_compound = sum(1 for lt in label_types if lt == "compound")
-    print(f"Label classification: {sum(serotype_known)} resolved serotypes, "
-          f"{n_serogroup} serogroup-only, {n_compound} compound")
+    logger.info(
+        "Label classification: %d resolved serotypes, %d serogroup-only, %d compound",
+        sum(serotype_known),
+        n_serogroup,
+        n_compound,
+    )
 
     # ── Enforce minimum sample count per serotype ──
     min_count = args.model_params.get("min_serotype_count", MIN_SEROTYPE_COUNT)
     resolved_counts = Counter(lbl for lbl, sk in zip(fine_labels, serotype_known) if sk)
     rare_serotypes = {s for s, c in resolved_counts.items() if c < min_count}
     if rare_serotypes:
-        print(f"Serotypes below min_count={min_count} (demoted to serogroup-only): "
-              f"{sorted(rare_serotypes)} with counts {[(s, resolved_counts[s]) for s in sorted(rare_serotypes)]}")
+        logger.info(
+            "Serotypes below min_count=%d (demoted to serogroup-only): %s with counts %s",
+            min_count,
+            sorted(rare_serotypes),
+            [(s, resolved_counts[s]) for s in sorted(rare_serotypes)],
+        )
         serotype_known = [
             (sk and fine_labels[i] not in rare_serotypes)
             for i, sk in enumerate(serotype_known)
         ]
 
     # ── Build serotype_to_idx from resolved labels ONLY ──
-    resolved_serotypes = sorted({lbl for lbl, sk in zip(fine_labels, serotype_known) if sk})
+    resolved_serotypes = sorted(
+        {lbl for lbl, sk in zip(fine_labels, serotype_known) if sk}
+    )
     serotype_to_idx = {s: idx for idx, s in enumerate(resolved_serotypes)}
     num_serotypes = len(resolved_serotypes)
-    print(f"Found {num_serotypes} resolved serotype classes: {resolved_serotypes}")
+    logger.info(
+        "Found %d resolved serotype classes: %s", num_serotypes, resolved_serotypes
+    )
 
     # ── Genogroup index uses all capsulated samples (including serogroup-only) ──
     unique_genogroups = sorted(list(set(coarse_labels)))
     genogroup_to_idx = {group: idx for idx, group in enumerate(unique_genogroups)}
     num_genogroups = len(unique_genogroups)
-    print(f"Found {num_genogroups} unique genogroups: {unique_genogroups}")
+    logger.info("Found %d unique genogroups: %s", num_genogroups, unique_genogroups)
 
-    wandb.config.update({
-        "random_state": random_state,
-        "k_folds": k_folds,
-        "temperature": temperature,
-        "weight_fine": weight_fine,
-        "weight_coarse": weight_coarse,
-        "num_layers": num_layers,
-        "nhead": nhead,
-        "epochs": args.epochs,
-        "batch_size": args.batch_size,
-        "lr": args.lr,
-        "alpha": alpha,
-        "output_dim": output_dim,
-        "num_serotypes": num_serotypes,
-        "num_genogroups": num_genogroups,
-        "aug_noise_std": args.aug_noise_std,
-        "aug_chunk_dropout": args.aug_chunk_dropout,
-        "aug_spec_freq": args.aug_spec_freq,
-        "aug_spec_width": args.aug_spec_width,
-        "aug_n_views": args.aug_n_views,
-    })
-    
+    wandb.config.update(
+        {
+            "random_state": random_state,
+            "k_folds": k_folds,
+            "temperature": temperature,
+            "weight_fine": weight_fine,
+            "weight_coarse": weight_coarse,
+            "num_layers": num_layers,
+            "nhead": nhead,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "lr": args.lr,
+            "alpha": alpha,
+            "output_dim": output_dim,
+            "num_serotypes": num_serotypes,
+            "num_genogroups": num_genogroups,
+            "aug_noise_std": args.aug_noise_std,
+            "aug_chunk_dropout": args.aug_chunk_dropout,
+            "aug_spec_freq": args.aug_spec_freq,
+            "aug_spec_width": args.aug_spec_width,
+            "aug_n_views": args.aug_n_views,
+        }
+    )
+
     if args.hierarchical_loss:
-        print("Using hierarchical contrastive loss with weights:", weight_fine, weight_coarse)
+        logger.info(
+            "Using hierarchical contrastive loss with weights: %s, %s",
+            weight_fine,
+            weight_coarse,
+        )
         labels_known = list(zip(coarse_labels, fine_labels))
-        loss_function = partial(hierarchical_contrastive_loss, weight_fine=weight_fine, weight_coarse=weight_coarse)
+        loss_function = partial(
+            hierarchical_contrastive_loss,
+            weight_fine=weight_fine,
+            weight_coarse=weight_coarse,
+        )
     else:
         labels_known = fine_labels
         loss_function = supervised_contrastive_loss
 
-    sample_ids = (labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices].astype(str)).tolist()
+    sample_ids = (
+        labels.index[indices] + CONTIG_SEP + labels["Contig_ID"][indices].astype(str)
+    ).tolist()
     is_capsule = labels["Is_capsule"][indices].tolist()
 
     # Log overall class distributions for reproducibility
     sero_counts = Counter(fine_labels)
     geno_counts = Counter(coarse_labels)
     cbl_counts = Counter(is_capsule)
-    wandb.log({
-        "class_dist/serotype_counts": wandb.Table(
-            columns=["serotype", "count", "serotype_known"],
-            data=[[s, c, s in serotype_to_idx] for s, c in sorted(sero_counts.items())],
-        ),
-        "class_dist/genogroup_counts": wandb.Table(
-            columns=["genogroup", "count"],
-            data=[[g, c] for g, c in sorted(geno_counts.items())],
-        ),
-        "class_dist/cbl_counts": wandb.Table(
-            columns=["is_capsule", "count"],
-            data=[[str(k), v] for k, v in sorted(cbl_counts.items())],
-        ),
-    })
+    wandb.log(
+        {
+            "class_dist/serotype_counts": wandb.Table(
+                columns=["serotype", "count", "serotype_known"],
+                data=[
+                    [s, c, s in serotype_to_idx] for s, c in sorted(sero_counts.items())
+                ],
+            ),
+            "class_dist/genogroup_counts": wandb.Table(
+                columns=["genogroup", "count"],
+                data=[[g, c] for g, c in sorted(geno_counts.items())],
+            ),
+            "class_dist/cbl_counts": wandb.Table(
+                columns=["is_capsule", "count"],
+                data=[[str(k), v] for k, v in sorted(cbl_counts.items())],
+            ),
+        }
+    )
 
     # ── Stratification labels for k-fold ──
     # Use fine_label for resolved serotypes, coarse_label for serogroup-only/compound
@@ -423,8 +627,10 @@ def main(args):
 
     dataset_class = DatasetRegistry.get_dataset_class(dataset_name)
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
-    for fold, (train_idx, test_idx) in enumerate(skf.split(np.zeros(len(strat_labels)), strat_labels)):
-        print(f"Fold {fold+1} / {k_folds}")
+    for fold, (train_idx, test_idx) in enumerate(
+        skf.split(np.zeros(len(strat_labels)), strat_labels)
+    ):
+        logger.info("Fold %d / %d", fold + 1, k_folds)
 
         train_ds_base = dataset_class(
             embeddings_dir=args.embedding_dir,
@@ -436,7 +642,8 @@ def main(args):
         # Wrap training set with embedding augmentation if enabled
         if embedding_augmentor is not None:
             train_ds = AugmentedChunkedDataset(
-                train_ds_base, augmentor=embedding_augmentor,
+                train_ds_base,
+                augmentor=embedding_augmentor,
                 n_views=args.aug_n_views,
             )
         else:
@@ -450,8 +657,12 @@ def main(args):
             serotype_known=serotype_known_arr[test_idx],
         )
 
-        train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=args.batch_size, collate_fn=collate_fn)
+        train_loader = DataLoader(
+            train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn
+        )
+        test_loader = DataLoader(
+            test_ds, batch_size=args.batch_size, collate_fn=collate_fn
+        )
 
         # -- class weights from training split only (serotype weights from resolved-only samples) --
         train_fine = np.array(fine_labels)[train_idx]
@@ -464,20 +675,35 @@ def main(args):
         # Serotype weights computed from resolved-serotype samples only
         sero_weights = compute_class_weights(
             [lbl for lbl, sk in zip(train_fine, train_sk) if sk],
-            serotype_to_idx, device
+            serotype_to_idx,
+            device,
         )
-        geno_weights = compute_class_weights(train_coarse.tolist(), genogroup_to_idx, device)
+        geno_weights = compute_class_weights(
+            train_coarse.tolist(), genogroup_to_idx, device
+        )
 
-        print(f"  Fold {fold+1} CBL weights:       {cbl_weights.cpu().tolist()}")
-        print(f"  Fold {fold+1} serotype weight range: [{sero_weights.min():.3f}, {sero_weights.max():.3f}]")
-        print(f"  Fold {fold+1} genogroup weight range: [{geno_weights.min():.3f}, {geno_weights.max():.3f}]")
+        logger.info(
+            "  Fold %d CBL weights:       %s", fold + 1, cbl_weights.cpu().tolist()
+        )
+        logger.info(
+            "  Fold %d serotype weight range: [%.3f, %.3f]",
+            fold + 1,
+            sero_weights.min(),
+            sero_weights.max(),
+        )
+        logger.info(
+            "  Fold %d genogroup weight range: [%.3f, %.3f]",
+            fold + 1,
+            geno_weights.min(),
+            geno_weights.max(),
+        )
 
         model = TransformerTriHeadLR(
             input_dim=embedding_dim,
             num_classes=(num_serotypes, num_genogroups),
             output_dim=output_dim,
             nhead=nhead,
-            num_layers=num_layers
+            num_layers=num_layers,
         ).to(device)
 
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -485,13 +711,44 @@ def main(args):
         serotype_loss_fn = nn.CrossEntropyLoss(weight=sero_weights)
         genogroup_loss_fn = nn.CrossEntropyLoss(weight=geno_weights)
 
-        best_loss, patience_counter = float('inf'), 0
+        best_loss, patience_counter = float("inf"), 0
 
-        for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold+1}"):
-            train_one_epoch(model, train_loader, optimizer, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
+        for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold + 1}"):
+            train_one_epoch(
+                model,
+                train_loader,
+                optimizer,
+                ce_loss_fn,
+                serotype_loss_fn,
+                genogroup_loss_fn,
+                loss_function,
+                alpha,
+                temperature,
+                serotype_to_idx,
+                genogroup_to_idx,
+            )
 
-            test_loss, cbl_accuracy, serotype_accuracy, genogroup_accuracy = evaluate(model, test_loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
-            print(f"Fold {fold+1} - Epoch {epoch+1} - Test Loss: {test_loss:.4f}, CBL Accuracy: {cbl_accuracy:.4f}, Serotype Accuracy: {serotype_accuracy:.4f}, Genogroup Accuracy: {genogroup_accuracy:.4f}")
+            test_loss, cbl_accuracy, serotype_accuracy, genogroup_accuracy = evaluate(
+                model,
+                test_loader,
+                ce_loss_fn,
+                serotype_loss_fn,
+                genogroup_loss_fn,
+                loss_function,
+                alpha,
+                temperature,
+                serotype_to_idx,
+                genogroup_to_idx,
+            )
+            logger.info(
+                "Fold %d - Epoch %d - Test Loss: %.4f, CBL Accuracy: %.4f, Serotype Accuracy: %.4f, Genogroup Accuracy: %.4f",
+                fold + 1,
+                epoch + 1,
+                test_loss,
+                cbl_accuracy,
+                serotype_accuracy,
+                genogroup_accuracy,
+            )
 
             if test_loss < best_loss:
                 best_loss = test_loss
@@ -499,11 +756,11 @@ def main(args):
             else:
                 patience_counter += 1
                 if patience_counter >= args.early_stopping:
-                    print("Early stopping triggered.")
+                    logger.info("Early stopping triggered.")
                     break
 
     # Retrain on all data
-    print("Retraining on all data...")
+    logger.info("Retraining on all data...")
     all_ds_base = dataset_class(
         embeddings_dir=args.embedding_dir,
         sample_ids=sample_ids,
@@ -513,32 +770,44 @@ def main(args):
     )
     if embedding_augmentor is not None:
         all_ds = AugmentedChunkedDataset(
-            all_ds_base, augmentor=embedding_augmentor,
+            all_ds_base,
+            augmentor=embedding_augmentor,
             n_views=args.aug_n_views,
         )
     else:
         all_ds = all_ds_base
-    all_loader = DataLoader(all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn)
+    all_loader = DataLoader(
+        all_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_fn
+    )
 
     # -- class weights from full dataset (serotype from resolved only) --
     cbl_to_idx = {0: 0, 1: 1}
     cbl_weights_all = compute_class_weights(is_capsule, cbl_to_idx, device)
     sero_weights_all = compute_class_weights(
         [lbl for lbl, sk in zip(fine_labels, serotype_known) if sk],
-        serotype_to_idx, device
+        serotype_to_idx,
+        device,
     )
     geno_weights_all = compute_class_weights(coarse_labels, genogroup_to_idx, device)
 
-    print(f"  Final CBL weights:       {cbl_weights_all.cpu().tolist()}")
-    print(f"  Final serotype weight range: [{sero_weights_all.min():.3f}, {sero_weights_all.max():.3f}]")
-    print(f"  Final genogroup weight range: [{geno_weights_all.min():.3f}, {geno_weights_all.max():.3f}]")
+    logger.info("  Final CBL weights:       %s", cbl_weights_all.cpu().tolist())
+    logger.info(
+        "  Final serotype weight range: [%.3f, %.3f]",
+        sero_weights_all.min(),
+        sero_weights_all.max(),
+    )
+    logger.info(
+        "  Final genogroup weight range: [%.3f, %.3f]",
+        geno_weights_all.min(),
+        geno_weights_all.max(),
+    )
 
     model_final = TransformerTriHeadLR(
         input_dim=embedding_dim,
         num_classes=(num_serotypes, num_genogroups),
         output_dim=output_dim,
         nhead=nhead,
-        num_layers=num_layers
+        num_layers=num_layers,
     ).to(device)
 
     optimizer = torch.optim.AdamW(model_final.parameters(), lr=args.lr)
@@ -546,42 +815,73 @@ def main(args):
     serotype_loss_fn = nn.CrossEntropyLoss(weight=sero_weights_all)
     genogroup_loss_fn = nn.CrossEntropyLoss(weight=geno_weights_all)
     for epoch in tqdm(range(args.epochs), desc="Final Training"):
-        train_one_epoch(model_final, all_loader, optimizer, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
-    
+        train_one_epoch(
+            model_final,
+            all_loader,
+            optimizer,
+            ce_loss_fn,
+            serotype_loss_fn,
+            genogroup_loss_fn,
+            loss_function,
+            alpha,
+            temperature,
+            serotype_to_idx,
+            genogroup_to_idx,
+        )
+
     # Evaluate on clean (unaugmented) data for honest metrics
-    print("Evaluating final model on all data...")
-    clean_loader = DataLoader(all_ds_base, batch_size=args.batch_size, collate_fn=collate_fn)
-    final_loss, final_cbl_accuracy, final_serotype_accuracy, final_genogroup_accuracy = evaluate(model_final, clean_loader, ce_loss_fn, serotype_loss_fn, genogroup_loss_fn, loss_function, alpha, temperature, serotype_to_idx, genogroup_to_idx)
-    print(f"Final model - Loss: {final_loss:.4f}, CBL Accuracy: {final_cbl_accuracy:.4f}, Serotype Accuracy: {final_serotype_accuracy:.4f}, Genogroup Accuracy: {final_genogroup_accuracy:.4f}")
+    logger.info("Evaluating final model on all data...")
+    clean_loader = DataLoader(
+        all_ds_base, batch_size=args.batch_size, collate_fn=collate_fn
+    )
+    (
+        final_loss,
+        final_cbl_accuracy,
+        final_serotype_accuracy,
+        final_genogroup_accuracy,
+    ) = evaluate(
+        model_final,
+        clean_loader,
+        ce_loss_fn,
+        serotype_loss_fn,
+        genogroup_loss_fn,
+        loss_function,
+        alpha,
+        temperature,
+        serotype_to_idx,
+        genogroup_to_idx,
+    )
+    logger.info(
+        "Final model - Loss: %.4f, CBL Accuracy: %.4f, Serotype Accuracy: %.4f, Genogroup Accuracy: %.4f",
+        final_loss,
+        final_cbl_accuracy,
+        final_serotype_accuracy,
+        final_genogroup_accuracy,
+    )
 
     # Save model and serotype mapping
     model_save_dict = {
-        'model_state_dict': model_final.state_dict(),
-        'serotype_to_idx': serotype_to_idx,
-        'genogroup_to_idx': genogroup_to_idx,
-        'num_serotypes': num_serotypes,
-        'num_genogroups': num_genogroups,
-        'model_config': {
-            'input_dim': embedding_dim,
-            'num_classes': (num_serotypes, num_genogroups),
-            'output_dim': output_dim,
-            'nhead': nhead,
-            'num_layers': num_layers
-        }
+        "model_state_dict": model_final.state_dict(),
+        "serotype_to_idx": serotype_to_idx,
+        "genogroup_to_idx": genogroup_to_idx,
+        "num_serotypes": num_serotypes,
+        "num_genogroups": num_genogroups,
+        "model_config": {
+            "input_dim": embedding_dim,
+            "num_classes": (num_serotypes, num_genogroups),
+            "output_dim": output_dim,
+            "nhead": nhead,
+            "num_layers": num_layers,
+        },
     }
     torch.save(model_save_dict, args.output)
-    print(f"Saved final model and serotype mapping to {args.output}")
+    logger.info("Saved final model and serotype mapping to %s", args.output)
 
 
 if __name__ == "__main__":
     args = parse_args()
     run_id = os.environ.get("SLURM_JOB_ID", os.urandom(4).hex())
     mode = "offline" if os.environ.get("WANDB_MODE") == "offline" else "online"
-    wandb.init(
-        project=WANDB_PROJECT_NAME,
-        config=args,
-        mode=mode
-    )
+    wandb.init(project=WANDB_PROJECT_NAME, config=args, mode=mode)
     wandb.run.name = f"{WANDB_PROJECT_NAME}-{run_id}"
     main(args)
-

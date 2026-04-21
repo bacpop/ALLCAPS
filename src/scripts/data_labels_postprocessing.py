@@ -14,22 +14,42 @@ from pathlib import Path
 
 from .consts import CONTIG_SEP
 from .data_labels_preprocessing import preprocess_metadata
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def main():
     parser = argparse.ArgumentParser(
         description="Filter metadata to samples that survived embedding",
     )
-    parser.add_argument("--clean_labels", required=True, help="Path to pre-processed metadata CSV/TSV")
-    parser.add_argument("--skip_labels", type=str, default="", help="Comma-separated list of labels to skip")
-    parser.add_argument("--embedding_dir", required=True, help="Path to flat directory of .npy embedding files")
-    parser.add_argument("--output_dir", required=True, help="Directory to write final_metadata.csv")
+    parser.add_argument(
+        "--clean_labels", required=True, help="Path to pre-processed metadata CSV/TSV"
+    )
+    parser.add_argument(
+        "--skip_labels",
+        type=str,
+        default="",
+        help="Comma-separated list of labels to skip",
+    )
+    parser.add_argument(
+        "--embedding_dir",
+        required=True,
+        help="Path to flat directory of .npy embedding files",
+    )
+    parser.add_argument(
+        "--output_dir", required=True, help="Directory to write final_metadata.csv"
+    )
 
     args = parser.parse_args()
     try:
-        args.skip_labels = [label.strip() for label in args.skip_labels.split(",") if label.strip()]
+        args.skip_labels = [
+            label.strip() for label in args.skip_labels.split(",") if label.strip()
+        ]
     except ValueError:
-        print("Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips.")
+        logger.error(
+            "Error parsing skip_labels. It should be a comma-separated list of labels. Proceeding with no skips."
+        )
         args.skip_labels = []
 
     labels = pd.read_csv(
@@ -40,8 +60,12 @@ def main():
         labels,
         skip_labels=args.skip_labels or None,
     )
-    print(f"After preprocessing: {len(labels)} entries, {labels.Serotype.nunique()} serotypes")
-    print(f"Loaded {len(labels)} metadata entries")
+    logger.info(
+        "After preprocessing: %d entries, %d serotypes",
+        len(labels),
+        labels.Serotype.nunique(),
+    )
+    logger.info("Loaded %d metadata entries", len(labels))
 
     output_path = Path(args.output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -50,24 +74,31 @@ def main():
     names = [f.split(".")[0] for f in os.listdir(embedding_dir) if f.endswith(".npy")]
     assert names, f"No .npy files found in {embedding_dir}"
 
-    labels["file_name"] = labels["Public_ID"].astype(str) + CONTIG_SEP + labels["Contig_ID"].astype(str)
+    labels["file_name"] = (
+        labels["Public_ID"].astype(str) + CONTIG_SEP + labels["Contig_ID"].astype(str)
+    )
 
     embedded = set(names)
     in_meta = set(labels["file_name"])
     missing_embeddings = in_meta - embedded
     missing_metadata = embedded - in_meta
     if missing_embeddings:
-        print(f"  {len(missing_embeddings)} metadata entries have no embedding file (dropped)")
+        logger.warning(
+            "%d metadata entries have no embedding file (dropped)",
+            len(missing_embeddings),
+        )
     if missing_metadata:
-        print(f"  {len(missing_metadata)} embedding files have no metadata entry (ignored)")
+        logger.warning(
+            "%d embedding files have no metadata entry (ignored)", len(missing_metadata)
+        )
 
     labels = labels[labels["file_name"].isin(embedded)]
     labels = labels.drop(columns=["file_name"])
 
     output_file = output_path / "final_metadata.csv"
     labels.to_csv(output_file, index=False)
-    print(f"Final metadata saved to {output_file}")
-    print(f"  {len(labels)} entries, {labels.Serotype.nunique()} serotypes")
+    logger.info("Final metadata saved to %s", output_file)
+    logger.info("%d entries, %d serotypes", len(labels), labels.Serotype.nunique())
 
 
 if __name__ == "__main__":

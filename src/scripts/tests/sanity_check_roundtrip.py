@@ -41,7 +41,10 @@ from ..inference import (
     load_trained_model,
     softmax_predict,
 )
+from ..logging_config import get_logger
 from ..utils import get_sample_id
+
+logger = get_logger(__name__)
 
 
 def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
@@ -168,7 +171,7 @@ def sample_fasta(fasta_path, labels_path, n_per_serotype, seed=42):
         n = min(n_per_serotype, len(ids))
         sampled_ids.update(rng.sample(ids, n))
 
-    print(f"Sampled {len(sampled_ids)} records across {labels_df['Serotype'].nunique()} serotypes.")
+    logger.info("Sampled %d records across %d serotypes.", len(sampled_ids), labels_df['Serotype'].nunique())
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".fasta", mode="w")
     count = 0
@@ -179,7 +182,7 @@ def sample_fasta(fasta_path, labels_path, n_per_serotype, seed=42):
             SeqIO.write(record, tmp, "fasta")
             count += 1
     tmp.close()
-    print(f"Wrote {count} records to {tmp.name}")
+    logger.info("Wrote %d records to %s", count, tmp.name)
     return tmp.name, sampled_ids
 
 
@@ -200,11 +203,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     # 1) Sample FASTA records
-    print("=== Step 1: Sampling FASTA records ===")
+    logger.info("=== Step 1: Sampling FASTA records ===")
     tmp_fasta, sampled_ids = sample_fasta(args.fasta, args.labels, args.samples_per_serotype)
 
     # 2) Run query pipeline in eval mode
-    print("\n=== Step 2: Running query pipeline (eval mode) ===")
+    logger.info("=== Step 2: Running query pipeline (eval mode) ===")
     query_df = run_query_pipeline_eval(
         fasta_path=tmp_fasta,
         model_path=args.model,
@@ -218,7 +221,7 @@ def main():
     query_df.index = query_df.index.map(lambda x: x.split("__")[0])
 
     # 3) Run NPZ eval path on the same samples
-    print("\n=== Step 3: Running NPZ eval path ===")
+    logger.info("=== Step 3: Running NPZ eval path ===")
     npz_df = run_npz_eval_path(
         npz_path=args.inference_npz,
         model_path=args.model,
@@ -229,9 +232,9 @@ def main():
     )
 
     # 4) Join and compare
-    print("\n=== Step 4: Comparing results ===")
+    logger.info("=== Step 4: Comparing results ===")
     common = query_df.index.intersection(npz_df.index)
-    print(f"Common samples: {len(common)} (query: {len(query_df)}, npz: {len(npz_df)})")
+    logger.info("Common samples: %d (query: %d, npz: %d)", len(common), len(query_df), len(npz_df))
 
     if len(common) == 0:
         os.unlink(tmp_fasta)
@@ -295,7 +298,7 @@ def main():
             )
 
     report_text = "\n".join(report_lines) + "\n"
-    print(report_text)
+    logger.info("\n%s", report_text)
 
     report_path = os.path.join(args.output_dir, "roundtrip_report.txt")
     with open(report_path, "w") as f:
@@ -309,7 +312,7 @@ def main():
     detail_df.to_csv(os.path.join(args.output_dir, "roundtrip_details.csv"))
 
     os.unlink(tmp_fasta)
-    print(f"\nReport saved to {report_path}")
+    logger.info("Report saved to %s", report_path)
 
 
 if __name__ == "__main__":

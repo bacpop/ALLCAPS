@@ -1,14 +1,17 @@
 import os
 import glob
 import numpy as np
-import pandas as pd
 from abc import ABC, abstractmethod
-from typing import Dict, Type, Any
+from typing import Dict, Type
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset
+
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 def _make_padding_mask(x: torch.Tensor) -> torch.Tensor:
@@ -22,9 +25,7 @@ def _make_padding_mask(x: torch.Tensor) -> torch.Tensor:
     return x.abs().sum(dim=-1) == 0  # (B, L)
 
 
-def _masked_mean_pool(
-    x: torch.Tensor, padding_mask: torch.Tensor
-) -> torch.Tensor:
+def _masked_mean_pool(x: torch.Tensor, padding_mask: torch.Tensor) -> torch.Tensor:
     """Mean-pool over non-padding positions only.
 
     This fixes a consistency issue where ``collate_fn`` zero-pads shorter
@@ -40,66 +41,80 @@ def _masked_mean_pool(
         (B, D) mean-pooled tensor.
     """
     real = (~padding_mask).float().unsqueeze(-1)  # (B, L, 1)
-    lengths = real.sum(dim=1).clamp(min=1)          # (B, 1)
-    return (x * real).sum(dim=1) / lengths           # (B, D)
+    lengths = real.sum(dim=1).clamp(min=1)  # (B, 1)
+    return (x * real).sum(dim=1) / lengths  # (B, D)
 
 
 # Model Registry
 class ModelRegistry:
     """Registry for model classes with factory pattern."""
-    _models: Dict[str, Type['BaseModel']] = {}
-    
+
+    _models: Dict[str, Type["BaseModel"]] = {}
+
     @classmethod
     def register(cls, name: str):
         """Decorator to register a model class."""
-        def decorator(model_class: Type['BaseModel']):
+
+        def decorator(model_class: Type["BaseModel"]):
             cls._models[name] = model_class
             return model_class
+
         return decorator
-    
+
     @classmethod
-    def create_model(cls, name: str, **kwargs) -> 'BaseModel':
+    def create_model(cls, name: str, **kwargs) -> "BaseModel":
         """Factory method to create a model instance."""
         if name not in cls._models:
-            available = ', '.join(cls._models.keys())
-            raise ValueError(f"Model '{name}' not registered. Available models: {available}")
+            available = ", ".join(cls._models.keys())
+            raise ValueError(
+                f"Model '{name}' not registered. Available models: {available}"
+            )
         return cls._models[name](**kwargs)
-    
+
     @classmethod
-    def get_model_class(cls, name: str) -> Type['BaseModel']:
+    def get_model_class(cls, name: str) -> Type["BaseModel"]:
         """Get the model class by name."""
         if name not in cls._models:
-            available = ', '.join(cls._models.keys())
-            raise ValueError(f"Model '{name}' not registered. Available models: {available}")
+            available = ", ".join(cls._models.keys())
+            raise ValueError(
+                f"Model '{name}' not registered. Available models: {available}"
+            )
         return cls._models[name]
 
 
 class DatasetRegistry:
     """Registry for dataset classes with factory pattern."""
+
     _datasets: Dict[str, Type[Dataset]] = {}
-    
+
     @classmethod
     def register(cls, name: str):
         """Decorator to register a dataset class."""
+
         def decorator(dataset_class: Type[Dataset]):
             cls._datasets[name] = dataset_class
             return dataset_class
+
         return decorator
 
     @classmethod
     def create_dataset(cls, name: str, **kwargs) -> Dataset:
         """Factory method to create a dataset instance."""
         if name not in cls._datasets:
-            available = ', '.join(cls._datasets.keys())
-            raise ValueError(f"Dataset '{name}' not registered. Available datasets: {available}")
+            available = ", ".join(cls._datasets.keys())
+            raise ValueError(
+                f"Dataset '{name}' not registered. Available datasets: {available}"
+            )
         return cls._datasets[name](**kwargs)
-    
+
     @classmethod
     def get_dataset_class(cls, name: str) -> Type[Dataset]:
         """Get the dataset class by name."""
         if name not in cls._datasets:
-            available = ', '.join(cls._datasets.keys())
-            raise ValueError(f"Dataset '{name}' not registered. Available datasets: {available}")
+            available = ", ".join(cls._datasets.keys())
+            raise ValueError(
+                f"Dataset '{name}' not registered. Available datasets: {available}"
+            )
         return cls._datasets[name]
 
 
@@ -118,25 +133,25 @@ def register_dataset(name: str):
 # Abstract Base Model
 class BaseModel(nn.Module, ABC):
     """Abstract base class for all models."""
-    
+
     def __init__(self, **kwargs):
         super().__init__()
-    
+
     @abstractmethod
     def forward(self, x):
         """Forward pass of the model."""
         pass
-    
+
     def get_model_info(self) -> dict:
         """Get model information including parameter count."""
         total_params = sum(p.numel() for p in self.parameters())
         trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
         return {
-            'model_class': self.__class__.__name__,
-            'total_parameters': total_params,
-            'trainable_parameters': trainable_params,
+            "model_class": self.__class__.__name__,
+            "total_parameters": total_params,
+            "trainable_parameters": trainable_params,
         }
-    
+
     @classmethod
     def from_config(cls, config: dict):
         """Create model instance from configuration dictionary."""
@@ -148,9 +163,7 @@ class ContrastiveHead(BaseModel):
     def __init__(self, input_dim, output_dim=128, **kwargs):
         super().__init__(**kwargs)
         self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, output_dim)
+            nn.Linear(input_dim, 256), nn.ReLU(), nn.Linear(256, output_dim)
         )
 
     def forward(self, x):
@@ -159,7 +172,14 @@ class ContrastiveHead(BaseModel):
 
 @register_dataset("contrastive_chunked")
 class ContrastiveChunkedDataset(Dataset):
-    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels, serotype_known=None):
+    def __init__(
+        self,
+        embeddings_dir,
+        sample_ids,
+        serotype_labels,
+        capsule_labels,
+        serotype_known=None,
+    ):
         """
         embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
         serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
@@ -167,9 +187,11 @@ class ContrastiveChunkedDataset(Dataset):
         """
         self.embedding_dir = embeddings_dir
         self.serotypes = serotype_labels
-        self.is_capsule = capsule_labels 
+        self.is_capsule = capsule_labels
         self.sample_ids = sample_ids
-        self.serotype_known = serotype_known if serotype_known is not None else [True] * len(sample_ids)
+        self.serotype_known = (
+            serotype_known if serotype_known is not None else [True] * len(sample_ids)
+        )
 
         # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
@@ -177,28 +199,39 @@ class ContrastiveChunkedDataset(Dataset):
 
         missing_samples = set(self.sample_ids) - set(file_names)
         if missing_samples:
-            print("{} sample_ids do not have a corresponding embedding file: {}".format(
-                len(missing_samples), missing_samples
-            ))
+            logger.warning(
+                "%d sample_ids do not have a corresponding embedding file: %s",
+                len(missing_samples),
+                missing_samples,
+            )
 
     def __len__(self) -> int:
         return len(self.sample_ids)
-    
+
     def __getitem__(self, idx):
         subdir = "cbl" if self.is_capsule[idx] else "non-cbl"
-        embedding_path = os.path.join(self.embedding_dir, subdir, f"{self.sample_ids[idx]}.npy")
+        embedding_path = os.path.join(
+            self.embedding_dir, subdir, f"{self.sample_ids[idx]}.npy"
+        )
         return {
-            'sample_id': self.sample_ids[idx],
-            'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
-            'serotype': self.serotypes[idx],
-            'is_capsule': self.is_capsule[idx],
-            'serotype_known': self.serotype_known[idx]
+            "sample_id": self.sample_ids[idx],
+            "embedding": torch.tensor(np.load(embedding_path), dtype=torch.float32),
+            "serotype": self.serotypes[idx],
+            "is_capsule": self.is_capsule[idx],
+            "serotype_known": self.serotype_known[idx],
         }
 
 
 @register_dataset("multidomain_chunked")
 class MultidomainChunkedDataset(Dataset):
-    def __init__(self, embeddings_dir, sample_ids, serotype_labels, capsule_labels, serotype_known=None):
+    def __init__(
+        self,
+        embeddings_dir,
+        sample_ids,
+        serotype_labels,
+        capsule_labels,
+        serotype_known=None,
+    ):
         """
         embeddings_path: str, path to directory with npy entries of variable length chunked embeddings
         serotype_labels: pd.DataFrame, DataFrame with serotype labels indexed by sample ID.
@@ -206,9 +239,11 @@ class MultidomainChunkedDataset(Dataset):
         """
         self.embedding_dir = embeddings_dir
         self.serotypes = serotype_labels
-        self.is_capsule = capsule_labels 
+        self.is_capsule = capsule_labels
         self.sample_ids = sample_ids
-        self.serotype_known = serotype_known if serotype_known is not None else [True] * len(sample_ids)
+        self.serotype_known = (
+            serotype_known if serotype_known is not None else [True] * len(sample_ids)
+        )
 
         # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "*.npy"))
@@ -216,44 +251,48 @@ class MultidomainChunkedDataset(Dataset):
 
         missing_samples = set(self.sample_ids) - set(file_names)
         if missing_samples:
-            print("{} sample_ids do not have a corresponding embedding file: {}".format(
-                len(missing_samples), missing_samples
-            ))
+            logger.warning(
+                "%d sample_ids do not have a corresponding embedding file: %s",
+                len(missing_samples),
+                missing_samples,
+            )
 
     def __len__(self) -> int:
         return len(self.sample_ids)
-    
+
     def __getitem__(self, idx):
         # subdir = "cbl" if self.is_capsule[idx] else "non-cbl"
         embedding_path = os.path.join(self.embedding_dir, f"{self.sample_ids[idx]}.npy")
         return {
-            'sample_id': self.sample_ids[idx],
-            'embedding': torch.tensor(np.load(embedding_path), dtype=torch.float32),
-            'serotype': self.serotypes[idx],
-            'is_capsule': self.is_capsule[idx],
-            'serotype_known': self.serotype_known[idx]
+            "sample_id": self.sample_ids[idx],
+            "embedding": torch.tensor(np.load(embedding_path), dtype=torch.float32),
+            "serotype": self.serotypes[idx],
+            "is_capsule": self.is_capsule[idx],
+            "serotype_known": self.serotype_known[idx],
         }
 
 
 @register_model("transformer_contrastive_head")
 class TransformerContrastiveHead(BaseModel):
-    def __init__(self, input_dim, output_dim=128, max_len=64, nhead=4, num_layers=2, **kwargs):
+    def __init__(
+        self, input_dim, output_dim=128, max_len=64, nhead=4, num_layers=2, **kwargs
+    ):
         super().__init__(**kwargs)
-        self.pos_embed = nn.Embedding(max_len, input_dim)  # TODO Dynamically expand or clamp
+        self.pos_embed = nn.Embedding(
+            max_len, input_dim
+        )  # TODO Dynamically expand or clamp
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=input_dim,
             nhead=nhead,
             dim_feedforward=4 * input_dim,
-            batch_first=True
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.cbl_classifier = nn.Linear(output_dim, 2)
 
         self.project = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.ReLU(),
-            nn.Linear(input_dim, output_dim)
+            nn.Linear(input_dim, input_dim), nn.ReLU(), nn.Linear(input_dim, output_dim)
         )
 
     def forward(self, x):
@@ -270,7 +309,16 @@ class TransformerContrastiveHead(BaseModel):
 
 @register_model("transformer_lr_classifier")
 class TransformerLRClassifier(BaseModel):
-    def __init__(self, input_dim, num_classes, output_dim=128, max_len=64, nhead=4, num_layers=2, **kwargs):
+    def __init__(
+        self,
+        input_dim,
+        num_classes,
+        output_dim=128,
+        max_len=64,
+        nhead=4,
+        num_layers=2,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.pos_embed = nn.Embedding(max_len, input_dim)
 
@@ -278,16 +326,14 @@ class TransformerLRClassifier(BaseModel):
             d_model=input_dim,
             nhead=nhead,
             dim_feedforward=4 * input_dim,
-            batch_first=True
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.cbl_classifier = nn.Linear(output_dim, 2)
         self.serotype_classifier = nn.Linear(output_dim, num_classes)
 
         self.project = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.ReLU(),
-            nn.Linear(input_dim, output_dim)
+            nn.Linear(input_dim, input_dim), nn.ReLU(), nn.Linear(input_dim, output_dim)
         )
 
     def forward(self, x):
@@ -305,7 +351,16 @@ class TransformerLRClassifier(BaseModel):
 
 @register_model("transformer_trihead_lr")
 class TransformerTriHeadLR(BaseModel):
-    def __init__(self, input_dim, num_classes, output_dim=128, max_len=64, nhead=4, num_layers=2, **kwargs):
+    def __init__(
+        self,
+        input_dim,
+        num_classes,
+        output_dim=128,
+        max_len=64,
+        nhead=4,
+        num_layers=2,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.pos_embed = nn.Embedding(max_len, input_dim)
 
@@ -313,19 +368,19 @@ class TransformerTriHeadLR(BaseModel):
             d_model=input_dim,
             nhead=nhead,
             dim_feedforward=4 * input_dim,
-            batch_first=True
+            batch_first=True,
         )
         self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.cbl_classifier = nn.Linear(output_dim, 2)
-        
-        assert len(num_classes) == 2, "num_classes should be a list or tuple of length 2 for the two classifiers."
+
+        assert len(num_classes) == 2, (
+            "num_classes should be a list or tuple of length 2 for the two classifiers."
+        )
         self.serotype_classifier = nn.Linear(output_dim, num_classes[0])
         self.genogroup_classifier = nn.Linear(output_dim, num_classes[1])
 
         self.project = nn.Sequential(
-            nn.Linear(input_dim, input_dim),
-            nn.ReLU(),
-            nn.Linear(input_dim, output_dim)
+            nn.Linear(input_dim, input_dim), nn.ReLU(), nn.Linear(input_dim, output_dim)
         )
 
     def forward(self, x):

@@ -41,7 +41,10 @@ from ..inference import (
     set_deterministic_seeds,
     softmax_predict,
 )
+from ..logging_config import get_logger
 from ..openmax import OpenMax
+
+logger = get_logger(__name__)
 
 THRESH_CPS = 0.5
 DEFAULT_ENERGY_PERCENTILE = 99.0
@@ -60,13 +63,17 @@ def _load_energy_percentiles(json_path: Optional[str]) -> dict:
     """Load energy percentiles from energy_summary.json, falling back to hard-coded values."""
     if json_path and os.path.isfile(json_path):
         import json
+
         with open(json_path) as f:
             data = json.load(f)
         pcts = data.get("percentiles_serotype", {})
         if pcts:
             # Ensure keys are strings for consistent lookup
             return {str(k): float(v) for k, v in pcts.items()}
-        print(f"WARNING: energy_summary.json at {json_path} missing 'percentiles_serotype'; using fallback.")
+        logger.warning(
+            "energy_summary.json at %s missing 'percentiles_serotype'; using fallback.",
+            json_path,
+        )
     return dict(_PERCENTILES_SEROTYPE_FALLBACK)
 
 
@@ -83,10 +90,8 @@ def main(args):
 
     # Energy threshold — prefer loading from JSON over hard-coded values
     resolved_temperature = float(args.energy_temperature)
-    percentiles = _load_energy_percentiles(getattr(args, 'energy_summary', None))
-    tau_serotype: Optional[float] = percentiles.get(
-        str(args.energy_percentile)
-    )
+    percentiles = _load_energy_percentiles(getattr(args, "energy_summary", None))
+    tau_serotype: Optional[float] = percentiles.get(str(args.energy_percentile))
     if tau_serotype is None:
         raise ValueError(
             f"Energy percentile {args.energy_percentile} not found in percentiles: {sorted(percentiles.keys())}"
@@ -101,10 +106,10 @@ def main(args):
     if "stride_ratio" in args.model_params:
         base_kwargs["stride_ratio"] = args.model_params["stride_ratio"]
 
-    print(f"Loading the {args.base_model} base model...")
+    logger.info("Loading the %s base model...", args.base_model)
     base_bundle = load_base_model(**base_kwargs)
 
-    print("Loading the transformer and logistic regression model...")
+    logger.info("Loading the transformer and logistic regression model...")
     head_bundle = load_trained_model(args.model_path, device, args.head_model)
     logistic_model = head_bundle.model
     idx_to_serotype = head_bundle.idx_to_serotype
@@ -114,17 +119,19 @@ def main(args):
     openmax_model: Optional[OpenMax] = None
     if args.openmax_params:
         if not os.path.isfile(args.openmax_params):
-            raise FileNotFoundError(f"OpenMax parameters file not found: {args.openmax_params}")
-        print(f"Loading OpenMax parameters from {args.openmax_params}")
+            raise FileNotFoundError(
+                f"OpenMax parameters file not found: {args.openmax_params}"
+            )
+        logger.info("Loading OpenMax parameters from %s", args.openmax_params)
         openmax_model = OpenMax.load(args.openmax_params)
 
     # ── Process each query sequence ───────────────────────────
-    print("Processing queries...")
+    logger.info("Processing queries...")
     results: dict = {}
     query_sequences = list(SeqIO.parse(args.query, "fasta"))
 
     for record in tqdm(query_sequences, desc="Processing queries"):
-        print(f"Processing query: {record.id}...")
+        logger.info("Processing query: %s...", record.id)
 
         # Canonical embedding — single source of truth via inference.embed_sequence
         cbl_list, sero_list, geno_list, z_list = embed_sequence(
@@ -143,11 +150,7 @@ def main(args):
         if n_windows == 1:
             sel_cbl = np.asarray(cbl_list[0]).squeeze()
             sel_sero = np.asarray(sero_list[0]).squeeze()
-            sel_geno = (
-                None
-                if geno_list is None
-                else np.asarray(geno_list[0]).squeeze()
-            )
+            sel_geno = None if geno_list is None else np.asarray(geno_list[0]).squeeze()
             sel_z = np.asarray(z_list[0])
         else:
             # Scan mode: mean-logit pooling over capsulated windows
@@ -162,9 +165,7 @@ def main(args):
 
             use = capsulated if capsulated else list(range(n_windows))
 
-            sel_cbl = np.mean(
-                [np.asarray(cbl_list[i]).squeeze() for i in use], axis=0
-            )
+            sel_cbl = np.mean([np.asarray(cbl_list[i]).squeeze() for i in use], axis=0)
             sel_sero = np.mean(
                 [np.asarray(sero_list[i]).squeeze() for i in use], axis=0
             )
@@ -173,9 +174,7 @@ def main(args):
                 sel_geno = np.mean(
                     [np.asarray(geno_list[i]).squeeze() for i in use], axis=0
                 )
-            sel_z = np.mean(
-                [np.asarray(z_list[i]) for i in use], axis=0
-            )
+            sel_z = np.mean([np.asarray(z_list[i]) for i in use], axis=0)
 
         # ── Predictions ───────────────────────────────────────
         cbl_probs = torch.softmax(
@@ -255,11 +254,11 @@ def parse_args():
         description="Query processing via trihead serotyping model."
     )
     p.add_argument("--output_dir", type=str, required=True)
+    p.add_argument("--device", type=str, default="cuda", choices=["cuda", "cpu"])
     p.add_argument(
-        "--device", type=str, default="cuda", choices=["cuda", "cpu"]
-    )
-    p.add_argument(
-        "--query", type=str, required=True,
+        "--query",
+        type=str,
+        required=True,
         help="Path to the query FASTA file.",
     )
     p.add_argument("--model_params", type=str, default="{}")
@@ -307,4 +306,3 @@ def parse_args():
 
 if __name__ == "__main__":
     main(parse_args())
-

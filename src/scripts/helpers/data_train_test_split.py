@@ -21,39 +21,71 @@ from ..consts import (
     MIN_SEROTYPE_COUNT,
     RND_STATE,
     TRAIN_SPLIT_RATIO,
+    DEFAULT_ID_COLUMN,
+    DEFAULT_CONTIG_COLUMN,
 )
 from ..data_labels_preprocessing import preprocess_metadata
+from ..logging_config import get_logger
 
-DEFAULT_ID_COLUMN = "Public_ID"
-DEFAULT_CONTIG_COLUMN = "Contig_ID"
+logger = get_logger(__name__)
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Train/test split for FASTA + metadata pairs")
-    parser.add_argument("--fastas", nargs="+", required=True,
-                        help="List of input FASTA files (space-separated)")
-    parser.add_argument("--metadata", nargs="+", required=True,
-                        help="List of metadata CSV/TSV files aligned to FASTAs (space-separated)")
-    parser.add_argument("--ratios", type=str, default=str(TRAIN_SPLIT_RATIO),
-                        help="Train ratios: single float or comma-separated list matching number of inputs")
-    parser.add_argument("--output_dir", required=True,
-                        help="Directory to write train/test FASTA and metadata")
-    parser.add_argument("--seed", type=int, default=RND_STATE, help="Random seed for splits")
-    parser.add_argument("--id_column", type=str, default=DEFAULT_ID_COLUMN,
-                        help="Metadata column that matches FASTA record.id")
-    parser.add_argument("--serotype_column", type=str, default=DEFAULT_LABEL_COLUMN,
-                        help="Metadata column containing class labels for stratification")
+    parser = argparse.ArgumentParser(
+        description="Train/test split for FASTA + metadata pairs"
+    )
+    parser.add_argument(
+        "--fastas",
+        nargs="+",
+        required=True,
+        help="List of input FASTA files (space-separated)",
+    )
+    parser.add_argument(
+        "--metadata",
+        nargs="+",
+        required=True,
+        help="List of metadata CSV/TSV files aligned to FASTAs (space-separated)",
+    )
+    parser.add_argument(
+        "--ratios",
+        type=str,
+        default=str(TRAIN_SPLIT_RATIO),
+        help="Train ratios: single float or comma-separated list matching number of inputs",
+    )
+    parser.add_argument(
+        "--output_dir",
+        required=True,
+        help="Directory to write train/test FASTA and metadata",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=RND_STATE, help="Random seed for splits"
+    )
+    parser.add_argument(
+        "--id_column",
+        type=str,
+        default=DEFAULT_ID_COLUMN,
+        help="Metadata column that matches FASTA record.id",
+    )
+    parser.add_argument(
+        "--serotype_column",
+        type=str,
+        default=DEFAULT_LABEL_COLUMN,
+        help="Metadata column containing class labels for stratification",
+    )
 
     args = parser.parse_args()
-    assert len(args.fastas) == len(args.metadata), \
+    assert len(args.fastas) == len(args.metadata), (
         f"fastas and metadata must have same length (got {len(args.fastas)} vs {len(args.metadata)})"
+    )
     return args
 
 
 def parse_ratios(ratios_raw: str, n: int) -> List[float]:
     if "," in ratios_raw:
         ratios = [float(r.strip()) for r in ratios_raw.split(",") if r.strip()]
-        assert len(ratios) == n, f"Provided {len(ratios)} ratios but {n} inputs; counts must match."
+        assert len(ratios) == n, (
+            f"Provided {len(ratios)} ratios but {n} inputs; counts must match."
+        )
     else:
         ratio = float(ratios_raw)
         ratios = [ratio] * n
@@ -61,7 +93,9 @@ def parse_ratios(ratios_raw: str, n: int) -> List[float]:
     return ratios
 
 
-def load_and_align(fasta_path, meta_path, id_column, contig_column=DEFAULT_CONTIG_COLUMN):
+def load_and_align(
+    fasta_path, meta_path, id_column, contig_column=DEFAULT_CONTIG_COLUMN
+):
     """Load a FASTA file and its metadata, align rows by composite ID.
 
     Returns
@@ -80,7 +114,7 @@ def load_and_align(fasta_path, meta_path, id_column, contig_column=DEFAULT_CONTI
     keep_mask = meta_ids.isin(fasta_id_set)
     if not keep_mask.all():
         dropped = (~keep_mask).sum()
-        print(f"  Dropping {dropped} metadata rows not found in {fasta_path}")
+        logger.warning("Dropping %d metadata rows not found in %s", dropped, fasta_path)
     meta = meta[keep_mask].copy()
     meta_ids = meta_ids[keep_mask]
 
@@ -101,43 +135,40 @@ def main():
     # ── Phase 1: Load and align every source ─────────────────────────
     all_records: list = []
     meta_parts: list[pd.DataFrame] = []
-    for i, (fasta_path, meta_path) in enumerate(
-        zip(args.fastas, args.metadata)
-    ):
-        print(f"\nLoading source {i}: {fasta_path}")
+    for i, (fasta_path, meta_path) in enumerate(zip(args.fastas, args.metadata)):
+        logger.info("Loading source %d: %s", i, fasta_path)
         meta, records = load_and_align(fasta_path, meta_path, args.id_column)
         meta["_source"] = i
-        meta["_rec_offset"] = range(
-            len(all_records), len(all_records) + len(records)
-        )
+        meta["_rec_offset"] = range(len(all_records), len(all_records) + len(records))
         meta_parts.append(meta)
         all_records.extend(records)
 
     combined = pd.concat(meta_parts, ignore_index=True)
-    print(
-        f"\nCombined pool: {len(combined)} samples, "
-        f"{combined[serotype_col].nunique()} serotypes"
+    logger.info(
+        "Combined pool: %d samples, %d serotypes",
+        len(combined),
+        combined[serotype_col].nunique(),
     )
 
     # ── Phase 2: Unified label preprocessing ─────────────────────────
     n_before = len(combined)
     combined = preprocess_metadata(combined, serotype_column=serotype_col)
-    print(
-        f"After preprocessing: {len(combined)} samples "
-        f"(dropped {n_before - len(combined)}), "
-        f"{combined[serotype_col].nunique()} serotypes"
+    logger.info(
+        "After preprocessing: %d samples (dropped %d), %d serotypes",
+        len(combined),
+        n_before - len(combined),
+        combined[serotype_col].nunique(),
     )
 
     # ── Phase 3: Global rare-serotype detection ──────────────────────
     global_counts = combined[serotype_col].value_counts()
-    rare_global = set(
-        global_counts[global_counts < MIN_SEROTYPE_COUNT].index
-    )
+    rare_global = set(global_counts[global_counts < MIN_SEROTYPE_COUNT].index)
     if rare_global:
         n_rare = combined[serotype_col].isin(rare_global).sum()
-        print(
-            f"Globally rare serotypes (all -> train): "
-            f"{sorted(rare_global)} ({n_rare} samples)"
+        logger.info(
+            "Globally rare serotypes (all -> train): %s (%d samples)",
+            sorted(rare_global),
+            n_rare,
         )
 
     rare_mask = combined[serotype_col].isin(rare_global)
@@ -150,7 +181,9 @@ def main():
         src = non_rare[non_rare["_source"] == src_i]
         if len(src) == 0:
             continue
-        print(f"\nSource {src_i}: {len(src)} splittable samples, ratio={ratio}")
+        logger.info(
+            "Source %d: %d splittable samples, ratio=%s", src_i, len(src), ratio
+        )
 
         # Serotypes too small *within this source* for stratification
         test_ratio = 1 - ratio
@@ -158,10 +191,8 @@ def main():
         src_counts = src[serotype_col].value_counts()
         src_rare = set(src_counts[src_counts < min_per_class].index)
         if src_rare:
-            print(f"  Source-rare (-> train): {sorted(src_rare)}")
-            train_idx.extend(
-                src.index[src[serotype_col].isin(src_rare)].tolist()
-            )
+            logger.info("Source-rare (-> train): %s", sorted(src_rare))
+            train_idx.extend(src.index[src[serotype_col].isin(src_rare)].tolist())
             src = src[~src[serotype_col].isin(src_rare)]
 
         if len(src) == 0:
@@ -183,14 +214,11 @@ def main():
     test_labels = set(test_meta[serotype_col])
     test_only = test_labels - train_labels
     if test_only:
-        print(
-            f"\nWARNING: serotypes in test but NOT in train: "
-            f"{sorted(test_only)}"
-        )
+        logger.warning("Serotypes in test but NOT in train: %s", sorted(test_only))
     else:
-        print(f"\nAll {len(test_labels)} test serotypes are present in train.")
+        logger.info("All %d test serotypes are present in train.", len(test_labels))
 
-    print(f"Train: {len(train_meta)} | Test: {len(test_meta)}")
+    logger.info("Train: %d | Test: %d", len(train_meta), len(test_meta))
 
     # ── Phase 6: Write outputs ───────────────────────────────────────
     train_records = [all_records[i] for i in train_meta["_rec_offset"]]
@@ -213,7 +241,7 @@ def main():
         os.path.join(args.output_dir, "test_metadata.csv"), index=False
     )
 
-    print(f"\nWrote train/test files to {args.output_dir}")
+    logger.info("Wrote train/test files to %s", args.output_dir)
 
 
 if __name__ == "__main__":

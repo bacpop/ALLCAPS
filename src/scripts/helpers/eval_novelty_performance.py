@@ -7,14 +7,20 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import roc_curve, auc
 from scipy.stats import percentileofscore
 
-plt.rcParams.update({
-    "axes.titlesize": 12,
-    "axes.labelsize": 11,
-    "axes.edgecolor": "#222222",
-    "xtick.color": "#222222",
-    "ytick.color": "#222222",
-    "font.size": 10,
-})
+from ..logging_config import get_logger
+
+logger = get_logger(__name__)
+
+plt.rcParams.update(
+    {
+        "axes.titlesize": 12,
+        "axes.labelsize": 11,
+        "axes.edgecolor": "#222222",
+        "xtick.color": "#222222",
+        "ytick.color": "#222222",
+        "font.size": 10,
+    }
+)
 
 
 def report_roc(id_energies, query_vals, output_dir):
@@ -37,12 +43,21 @@ def report_roc(id_energies, query_vals, output_dir):
         f"  True Positive Rate (Sensitivity): {tpr[best_idx]:.4f}",
         f"  False Positive Rate (1 - Specificity): {fpr[best_idx]:.4f}",
     ]
-    print("\n".join(summary_lines))
+    logger.info("\n%s", "\n".join(summary_lines))
 
     fig, ax = plt.subplots(figsize=(5.5, 5.5), dpi=150)
-    ax.plot(fpr, tpr, color="#0b2545", linewidth=2.2, label=f"Model (AUC = {roc_auc:.2f})")
+    ax.plot(
+        fpr, tpr, color="#0b2545", linewidth=2.2, label=f"Model (AUC = {roc_auc:.2f})"
+    )
     ax.fill_between(fpr, tpr, fpr, color="#0b2545", alpha=0.08)
-    ax.plot([0, 1], [0, 1], color="#9aa0a6", linestyle="--", linewidth=1.0, label="Random chance")
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        color="#9aa0a6",
+        linestyle="--",
+        linewidth=1.0,
+        label="Random chance",
+    )
 
     best_point = (fpr[best_idx], tpr[best_idx])
     ax.scatter(*best_point, color="#c44536", s=36, zorder=5, label="Youden max")
@@ -63,7 +78,9 @@ def report_roc(id_energies, query_vals, output_dir):
         ha="left",
         va="center",
         fontsize=9,
-        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.85)
+        bbox=dict(
+            boxstyle="round,pad=0.3", facecolor="white", edgecolor="none", alpha=0.85
+        ),
     )
 
     for spine in ["top", "right"]:
@@ -79,7 +96,11 @@ def report_roc(id_energies, query_vals, output_dir):
     ax.legend(frameon=False, loc="lower right", fontsize=9)
 
     fig.tight_layout()
-    fig.savefig(output_dir + f"/roc_curve_novelty_serotype_{serotype}.pdf", bbox_inches="tight", transparent=False)
+    fig.savefig(
+        output_dir + f"/roc_curve_novelty_serotype_{serotype}.pdf",
+        bbox_inches="tight",
+        transparent=False,
+    )
 
     with open(output_dir + "/energy_threshold_report.txt", "w") as f:
         f.write("\n".join(summary_lines))
@@ -93,20 +114,28 @@ def plot_energies(id_energies, query_vals, output_dir):
 
     fig, ax = plt.subplots(figsize=(15, 6))
 
-    ax.hist(id_energies, bins=100, alpha=0.7, label='CBL')
-    ax.hist(query_vals, bins=100, alpha=0.9, label='Query', color='#c44536')  # A dishonest trick: np.tile(query_vals, 2) to amplify for visualization
+    ax.hist(id_energies, bins=100, alpha=0.7, label="CBL")
+    ax.hist(
+        query_vals, bins=100, alpha=0.9, label="Query", color="#c44536"
+    )  # A dishonest trick: np.tile(query_vals, 2) to amplify for visualization
     # plt.hist(df['energy_serotype'][~df["is_cbl"]], bins=100, alpha=0.4, label='NON-CBL')
 
-    ax.axvline(best_threshold, color='black', linestyle='--', linewidth=1.2, label=f'Threshold ({best_threshold:.2f})')
+    ax.axvline(
+        best_threshold,
+        color="black",
+        linestyle="--",
+        linewidth=1.2,
+        label=f"Threshold ({best_threshold:.2f})",
+    )
 
-    ax.spines['top'].set_visible(False)
-    ax.spines['right'].set_visible(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
 
-    ax.set_xlabel('Energy')
-    ax.set_ylabel('Frequency')
-    ax.set_xticks([x/10.0 for x in range(-130, -50, 2)])
+    ax.set_xlabel("Energy")
+    ax.set_ylabel("Frequency")
+    ax.set_xticks([x / 10.0 for x in range(-130, -50, 2)])
     plt.xticks(rotation=45)
-    ax.set_title('Distribution of Serotype Energies')
+    ax.set_title("Distribution of Serotype Energies")
     ax.legend()
 
     fig.savefig(output_dir + f"/energy_histogram_{serotype}.pdf", dpi=300)
@@ -115,9 +144,19 @@ def plot_energies(id_energies, query_vals, output_dir):
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--df_path", required=True, help="Path to the CSV file containing energies and labels")
-    parser.add_argument("--query_path", required=True, help="Path to the CSV file containing query energies")
-    parser.add_argument("--output_dir", required=True, help="Directory to save output files")
+    parser.add_argument(
+        "--df_path",
+        required=True,
+        help="Path to the CSV file containing energies and labels",
+    )
+    parser.add_argument(
+        "--query_path",
+        required=True,
+        help="Path to the CSV file containing query energies",
+    )
+    parser.add_argument(
+        "--output_dir", required=True, help="Directory to save output files"
+    )
     parser.add_argument("--serotype", required=True, help="Serotype")
     return parser.parse_args()
 
@@ -132,6 +171,6 @@ if __name__ == "__main__":
 
     id_energies = df.loc[df["is_cbl"], "energy_serotype"].to_numpy()
     query_vals = query_energies["novelty_confidence"].to_numpy()
-    
+
     plot_energies(id_energies, query_vals, args.output_dir)
     report_roc(id_energies, query_vals, args.output_dir)

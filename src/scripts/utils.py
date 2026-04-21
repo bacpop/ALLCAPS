@@ -8,6 +8,9 @@ from typing import Tuple
 import pandas as pd
 
 from .consts import DEFAULT_SEP, CONTIG_SEP, DEFAULT_MISSING_LABEL, SEROGROUP_LABELS
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 EPS = 1e-9
 
 # A mapping of serotype to a more coarse label, consisting of
@@ -98,6 +101,7 @@ SEROTYPE_GROUPS = {
 }
 WHITELIST = ["NON-CBL"]
 
+
 def classify_label_type(label: str) -> str:
     """Classify a serotype label as 'serotype', 'serogroup_only', or 'compound'.
 
@@ -116,11 +120,13 @@ def classify_label_type(label: str) -> str:
 
 
 def map_serotype_to_group(serotype):
-    """ Map serotype to a more coarse label by
-    looking it up in the serogroup/genogroups data. """
+    """Map serotype to a more coarse label by
+    looking it up in the serogroup/genogroups data."""
     if not isinstance(serotype, str):
-        raise ValueError("Serotype must be a string. Got: {} ({})".format(serotype, type(serotype)))
-    
+        raise ValueError(
+            "Serotype must be a string. Got: {} ({})".format(serotype, type(serotype))
+        )
+
     if serotype in WHITELIST:
         return serotype
     if serotype in SEROTYPE_GROUPS:
@@ -130,8 +136,8 @@ def map_serotype_to_group(serotype):
 
 
 def extract_serogroup(serotype):
-    """ Map serotype to a more coarse label by
-    extracting the number from the serotype string. """
+    """Map serotype to a more coarse label by
+    extracting the number from the serotype string."""
     if isinstance(serotype, str):
         match = re.search(r"\d+", serotype)
         if match:
@@ -157,7 +163,9 @@ def supervised_contrastive_loss(z, labels, temperature):
             if i != j and labels[i] == labels[j]:
                 positives_mask[i, j] = True
 
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
+    diag_mask = torch.eye(
+        N, dtype=torch.bool, device=device
+    )  # Exclude diagonal from denominator
 
     exp_logits = torch.exp(logits)
     pos_exp = exp_logits * positives_mask
@@ -171,7 +179,9 @@ def supervised_contrastive_loss(z, labels, temperature):
     return loss
 
 
-def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weight_coarse=0.5):
+def hierarchical_contrastive_loss(
+    z, labels, temperature, weight_fine=1.0, weight_coarse=0.5
+):
     """
     Hierarchical contrastive loss that assigns different weights to pairs that share:
       (a) the same fine label (strong positive),
@@ -187,19 +197,24 @@ def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weigh
     weight_matrix = torch.zeros((N, N), dtype=torch.float, device=device)
     for i in range(N):
         for j in range(N):
-            if i == j: continue  # Exclude diagonal
+            if i == j:
+                continue  # Exclude diagonal
             if coarse_labels[i] == coarse_labels[j]:
                 if fine_labels[i] == fine_labels[j]:
                     weight_matrix[i, j] = weight_fine  # Strong positive
                 else:
-                    weight_matrix[i, j] = weight_coarse  # Partial positive, e.g., 15A vs 15B
+                    weight_matrix[i, j] = (
+                        weight_coarse  # Partial positive, e.g., 15A vs 15B
+                    )
 
     # An InfoNCE-like approach, but we sum up weighted positives in the numerator:
     #    Numerator = sum_{j} [ W[i, j] * exp(logits[i, j]) ]
     #    Denominator = sum_{k != i} [ exp(logits[i, k]) ]
     #    Then L_i = - log( ( numerator ) / ( denominator ) ), and final L = mean(L_i).
 
-    diag_mask = torch.eye(N, dtype=torch.bool, device=device)  # Exclude diagonal from denominator
+    diag_mask = torch.eye(
+        N, dtype=torch.bool, device=device
+    )  # Exclude diagonal from denominator
 
     exp_logits = torch.exp(logits)
     den_exp = exp_logits * ~diag_mask
@@ -214,25 +229,30 @@ def hierarchical_contrastive_loss(z, labels, temperature, weight_fine=1.0, weigh
 
 
 def collate_fn(batch):
-    embeddings = [item['embedding'] for item in batch]  # [(L_i, D), ...]
-    serotypes = [item['serotype'] for item in batch]
-    is_capsule = torch.tensor([item['is_capsule'] for item in batch], dtype=torch.long)
+    embeddings = [item["embedding"] for item in batch]  # [(L_i, D), ...]
+    serotypes = [item["serotype"] for item in batch]
+    is_capsule = torch.tensor([item["is_capsule"] for item in batch], dtype=torch.long)
     serotype_known = torch.tensor(
-        [item.get('serotype_known', True) for item in batch], dtype=torch.bool
+        [item.get("serotype_known", True) for item in batch], dtype=torch.bool
     )
 
-    padded_embeddings = pad_sequence(embeddings, batch_first=True)  # shape [B, L_max, D]
+    padded_embeddings = pad_sequence(
+        embeddings, batch_first=True
+    )  # shape [B, L_max, D]
 
     return {
-        'sample_id': [item['sample_id'] for item in batch],  # list[str]
-        'embedding': padded_embeddings,   # tensor [B, L_max, D]
-        'serotype': serotypes,            # list[str]
-        'is_capsule': is_capsule,         # tensor [B]
-        'serotype_known': serotype_known  # tensor [B] (bool)
+        "sample_id": [item["sample_id"] for item in batch],  # list[str]
+        "embedding": padded_embeddings,  # tensor [B, L_max, D]
+        "serotype": serotypes,  # list[str]
+        "is_capsule": is_capsule,  # tensor [B]
+        "serotype_known": serotype_known,  # tensor [B] (bool)
     }
 
+
 def chunk_sequence(seq, chunk_size=512, stride=256):
-    return [seq[i:i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)]
+    return [
+        seq[i : i + chunk_size] for i in range(0, len(seq) - chunk_size + 1, stride)
+    ]
 
 
 def embed_chunks(chunks, tokenizer, model, device, max_length):
@@ -249,23 +269,34 @@ def embed_chunks(chunks, tokenizer, model, device, max_length):
     with torch.no_grad():
         outputs = model(**inputs, output_hidden_states=True)
         last_hidden = outputs.hidden_states[-1]  # (B, T, D)
-        pooled = last_hidden.mean(dim=1)         # (B, D)
+        pooled = last_hidden.mean(dim=1)  # (B, D)
     return pooled.cpu()
 
 
-def get_sample_id(df: pd.DataFrame, sep = CONTIG_SEP) -> pd.Series:
+def get_sample_id(df: pd.DataFrame, sep=CONTIG_SEP) -> pd.Series:
     return df.index + sep + df["Contig_ID"].astype(str)
 
 
 def load_data(
-    embeddings_path: str, labels_path: str, sep: str = DEFAULT_SEP, missing_label: str = DEFAULT_MISSING_LABEL
+    embeddings_path: str,
+    labels_path: str,
+    sep: str = DEFAULT_SEP,
+    missing_label: str = DEFAULT_MISSING_LABEL,
 ) -> Tuple[np.ndarray, pd.DataFrame]:
     X = np.load(embeddings_path, allow_pickle=True)  # shape: (N, L, D)
-    labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
-    labels_df["Serotype"] = labels_df["Serotype"].fillna(missing_label)  # TODO should be empty already
+    labels_df = pd.read_csv(
+        labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ","
+    )
+    labels_df["Serotype"] = labels_df["Serotype"].fillna(
+        missing_label
+    )  # TODO should be empty already
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
-    keys = labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl") + sep + get_sample_id(labels_df)
+    keys = (
+        labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl")
+        + sep
+        + get_sample_id(labels_df)
+    )
     X_filtered = np.stack([X[key] for key in keys])
-    print(f"Loaded {len(X_filtered)} embeddings for capsulated samples")
+    logger.info("Loaded %d embeddings for capsulated samples", len(X_filtered))
     return X_filtered, labels_df

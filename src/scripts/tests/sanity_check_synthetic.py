@@ -35,7 +35,10 @@ from ..consts import (
     DEFAULT_MODEL, DEFAULT_CHUNK_SIZE, DEFAULT_MAX_LEN,
     DEFAULT_STRIDE_RATIO
 )
+from ..logging_config import get_logger
 from ..models import ModelRegistry
+
+logger = get_logger(__name__)
 
 
 # ───────────────────────────── Generators ─────────────────────────────
@@ -201,24 +204,24 @@ def main():
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".fasta", mode="w")
     records = []
 
-    print("Generating random DNA sequences...")
+    logger.info("Generating random DNA sequences...")
     for rec in generate_random_records(n=args.n_samples):
         records.append(rec)
 
-    print("Generating chimeric sequences...")
+    logger.info("Generating chimeric sequences...")
     for rec in generate_chimeric_records(args.fasta, args.labels, n=args.n_samples):
         records.append(rec)
 
-    print("Generating truncated sequences...")
+    logger.info("Generating truncated sequences...")
     for rec in generate_truncated_records(args.fasta, args.labels, n=args.n_samples):
         records.append(rec)
 
     SeqIO.write(records, tmp, "fasta")
     tmp.close()
-    print(f"Wrote {len(records)} synthetic records to {tmp.name}")
+    logger.info("Wrote %d synthetic records to %s", len(records), tmp.name)
 
     # ── Run pipeline ──
-    print("\n=== Running query pipeline (eval mode) ===")
+    logger.info("=== Running query pipeline (eval mode) ===")
     results_df = run_pipeline(
         fasta_path=tmp.name,
         model_path=args.model,
@@ -284,7 +287,7 @@ def main():
         report_lines.append("  INFO: Chimeric sequences expected to have degraded confidence")
 
     report_text = "\n".join(report_lines)
-    print("\n" + report_text)
+    logger.info("\n%s", report_text)
 
     report_path = os.path.join(args.output_dir, "synthetic_report.txt")
     with open(report_path, "w") as f:
@@ -293,7 +296,7 @@ def main():
     results_df.to_csv(os.path.join(args.output_dir, "synthetic_results.csv"))
 
     os.unlink(tmp.name)
-    print(f"\nReport saved to {report_path}")
+    logger.info("Report saved to %s", report_path)
 
 
 if __name__ == "__main__":

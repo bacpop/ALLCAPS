@@ -45,14 +45,20 @@ from scipy.stats import exponweib
 from tqdm import tqdm
 
 from .consts import (
-    DEFAULT_BATCH_SIZE, DEFAULT_HEAD_MODEL, DEFAULT_SEP,
-    DEFAULT_MISSING_LABEL
+    DEFAULT_BATCH_SIZE,
+    DEFAULT_HEAD_MODEL,
+    DEFAULT_SEP,
+    DEFAULT_MISSING_LABEL,
 )
+from .logging_config import get_logger
 from .models import ModelRegistry
 from .utils import get_sample_id
 
+logger = get_logger(__name__)
+
 
 # ──────────────────────────── Core OpenMax ────────────────────────────
+
 
 class OpenMax:
     """
@@ -138,15 +144,24 @@ class OpenMax:
         idx_arr = np.array([class_to_idx[lbl] for lbl in labels])
         unique_classes = sorted(set(idx_arr))
 
-        print(f"Fitting OpenMax on {len(activations)} samples, {len(unique_classes)} classes "
-              f"(tail_size={self.tail_size}, alpha={self.alpha}, distance={self.distance_metric})")
+        logger.info(
+            "Fitting OpenMax on %d samples, %d classes (tail_size=%d, alpha=%d, distance=%s)",
+            len(activations),
+            len(unique_classes),
+            self.tail_size,
+            self.alpha,
+            self.distance_metric,
+        )
 
         for cls_idx in tqdm(unique_classes, desc="Fitting Weibull per class"):
             mask = idx_arr == cls_idx
             cls_acts = activations[mask]
             if len(cls_acts) < 2:
                 # Too few samples; skip (will not produce Weibull)
-                print(f"  Warning: class {self.idx_to_class.get(cls_idx, cls_idx)} has <2 samples, skipping Weibull fit.")
+                logger.warning(
+                    "class %s has <2 samples, skipping Weibull fit.",
+                    self.idx_to_class.get(cls_idx, cls_idx),
+                )
                 continue
 
             mav = cls_acts.mean(axis=0)
@@ -156,7 +171,7 @@ class OpenMax:
             dists = np.array([self._dist(act, mav) for act in cls_acts])
 
             # Fit Weibull to the tail (η largest distances)
-            tail = np.sort(dists)[-self.tail_size:]
+            tail = np.sort(dists)[-self.tail_size :]
             if len(tail) < 3:
                 tail = np.sort(dists)  # use all if very small class
 
@@ -164,12 +179,20 @@ class OpenMax:
                 params = exponweib.fit(tail, floc=0)  # (a, c, loc, scale)
                 self.weibull_params[cls_idx] = params
             except Exception as e:
-                print(f"  Warning: Weibull fit failed for class {self.idx_to_class.get(cls_idx, cls_idx)}: {e}")
+                logger.warning(
+                    "Weibull fit failed for class %s: %s",
+                    self.idx_to_class.get(cls_idx, cls_idx),
+                    e,
+                )
                 # Fallback: use a very loose Weibull (never triggers unknown)
                 self.weibull_params[cls_idx] = (1.0, 1.0, 0.0, 1e6)
 
         self._fitted = True
-        print(f"Fitted Weibull for {len(self.weibull_params)} / {len(unique_classes)} classes.")
+        logger.info(
+            "Fitted Weibull for %d / %d classes.",
+            len(self.weibull_params),
+            len(unique_classes),
+        )
         return self
 
     # ─────────── scoring ───────────
@@ -295,7 +318,7 @@ class OpenMax:
         }
         with open(path, "wb") as f:
             pickle.dump(data, f)
-        print(f"OpenMax parameters saved to {path}")
+        logger.info("OpenMax parameters saved to %s", path)
 
     @classmethod
     def load(cls, path: str) -> "OpenMax":
@@ -316,6 +339,7 @@ class OpenMax:
 
 # ──────────────────── CLI: fit mode ────────────────────
 
+
 def cli_fit(args):
     """Fit OpenMax from pre-computed .npz embeddings (z vectors) + model + labels."""
     device = torch.device(args.device)
@@ -327,13 +351,17 @@ def cli_fit(args):
     serotype_to_idx = model_save_dict["serotype_to_idx"]
     head_model = args.head_model
 
-    model = ModelRegistry.get_model_class(head_model).from_config(model_config).to(device)
+    model = (
+        ModelRegistry.get_model_class(head_model).from_config(model_config).to(device)
+    )
     model.load_state_dict(model_save_dict["model_state_dict"])
     model.eval()
 
     # Load embeddings + labels
     X = np.load(args.embeddings, allow_pickle=True)
-    labels_df = pd.read_csv(args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ",")
+    labels_df = pd.read_csv(
+        args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ","
+    )
     labels_df["Serotype"] = labels_df["Serotype"].fillna(DEFAULT_MISSING_LABEL)
     labels_df = labels_df[labels_df["Serotype"] != DEFAULT_MISSING_LABEL]
     # Only capsulated samples for serotype
@@ -352,13 +380,15 @@ def cli_fit(args):
 
     X_filtered = np.stack([X[k] for k in keys])
     serotype_labels = labels_df["Serotype"].values
-    print(f"Loaded {len(X_filtered)} capsulated embeddings for fitting.")
+    logger.info("Loaded %d capsulated embeddings for fitting.", len(X_filtered))
 
     # Compute serotype logits and filter to correctly classified
     all_logits = []
     with torch.no_grad():
         for i in range(0, len(X_filtered), args.batch_size):
-            batch = torch.tensor(X_filtered[i : i + args.batch_size], dtype=torch.float32, device=device)
+            batch = torch.tensor(
+                X_filtered[i : i + args.batch_size], dtype=torch.float32, device=device
+            )
             sero_logits = model.serotype_classifier(batch)
             all_logits.append(sero_logits.cpu().numpy())
     all_logits = np.concatenate(all_logits, axis=0)
@@ -368,8 +398,12 @@ def cli_fit(args):
     true_indices = np.array([serotype_to_idx.get(lbl, -1) for lbl in serotype_labels])
     correct_mask = pred_indices == true_indices
 
-    print(f"Correctly classified: {correct_mask.sum()}/{len(correct_mask)} "
-          f"({correct_mask.mean():.2%})")
+    logger.info(
+        "Correctly classified: %d/%d (%.2f%%)",
+        correct_mask.sum(),
+        len(correct_mask),
+        100.0 * correct_mask.mean(),
+    )
 
     activations_correct = X_filtered[correct_mask]
     labels_correct = serotype_labels[correct_mask]
@@ -391,6 +425,7 @@ def cli_fit(args):
 
 # ──────────────────── CLI: predict mode ────────────────────
 
+
 def cli_predict(args):
     """Score samples using fitted OpenMax + model classifier on .npz embeddings."""
     device = torch.device(args.device)
@@ -399,7 +434,11 @@ def cli_predict(args):
     # Load model
     model_save_dict = torch.load(args.model, map_location=device)
     model_config = model_save_dict["model_config"]
-    model = ModelRegistry.get_model_class(args.head_model).from_config(model_config).to(device)
+    model = (
+        ModelRegistry.get_model_class(args.head_model)
+        .from_config(model_config)
+        .to(device)
+    )
     model.load_state_dict(model_save_dict["model_state_dict"])
     model.eval()
 
@@ -423,54 +462,61 @@ def cli_predict(args):
     keys = keys[valid_mask.values]
 
     X_filtered = np.stack([X[k] for k in keys])
-    print(f"Loaded {len(X_filtered)} embeddings for prediction.")
+    logger.info("Loaded %d embeddings for prediction.", len(X_filtered))
 
     # Compute logits
     all_logits = []
     with torch.no_grad():
         for i in range(0, len(X_filtered), args.batch_size):
-            batch = torch.tensor(X_filtered[i : i + args.batch_size], dtype=torch.float32, device=device)
+            batch = torch.tensor(
+                X_filtered[i : i + args.batch_size], dtype=torch.float32, device=device
+            )
             sero_logits = model.serotype_classifier(batch)
             all_logits.append(sero_logits.cpu().numpy())
     all_logits = np.concatenate(all_logits, axis=0)
 
     # Score with OpenMax
-    print("Running OpenMax scoring...")
+    logger.info("Running OpenMax scoring...")
     results = []
     for i in tqdm(range(len(X_filtered)), desc="OpenMax scoring"):
         score = om.openmax_score(X_filtered[i], all_logits[i])
-        results.append({
-            "sample_id": labels_df.index[i],
-            "serotype": labels_df["Serotype"].iloc[i],
-            "is_capsule": labels_df["Is_capsule"].iloc[i],
-            "openmax_pred": score["openmax_pred"],
-            "prob_unknown": round(score["prob_unknown"], 6),
-            "is_novel": score["is_novel"],
-            "raw_softmax_pred": score["raw_softmax_pred"],
-        })
+        results.append(
+            {
+                "sample_id": labels_df.index[i],
+                "serotype": labels_df["Serotype"].iloc[i],
+                "is_capsule": labels_df["Is_capsule"].iloc[i],
+                "openmax_pred": score["openmax_pred"],
+                "prob_unknown": round(score["prob_unknown"], 6),
+                "is_novel": score["is_novel"],
+                "raw_softmax_pred": score["raw_softmax_pred"],
+            }
+        )
 
     results_df = pd.DataFrame(results)
 
     # Compute classification metrics if ground truth is available
     capsulated = results_df[results_df["is_capsule"].astype(bool)].copy()
     if len(capsulated) > 0:
-        closed_correct = (capsulated["raw_softmax_pred"] == capsulated["serotype"]).mean()
+        closed_correct = (
+            capsulated["raw_softmax_pred"] == capsulated["serotype"]
+        ).mean()
         open_correct = (
             (capsulated["openmax_pred"] == capsulated["serotype"])
             | (capsulated["openmax_pred"] == OpenMax.UNKNOWN_LABEL)
         ).mean()
         novel_rate = capsulated["is_novel"].mean()
-        print("\n--- OpenMax Summary (capsulated samples) ---")
-        print(f"  Closed-set accuracy:  {closed_correct:.4f}")
-        print(f"  Open-set accuracy:    {open_correct:.4f}")
-        print(f"  Novel detection rate: {novel_rate:.4f}")
-        print(f"  Mean P(unknown):      {capsulated['prob_unknown'].mean():.6f}")
+        logger.info("--- OpenMax Summary (capsulated samples) ---")
+        logger.info("  Closed-set accuracy:  %.4f", closed_correct)
+        logger.info("  Open-set accuracy:    %.4f", open_correct)
+        logger.info("  Novel detection rate: %.4f", novel_rate)
+        logger.info("  Mean P(unknown):      %.6f", capsulated["prob_unknown"].mean())
 
     results_df.to_csv(args.output, index=False)
-    print(f"\nPredictions saved to {args.output}")
+    logger.info("Predictions saved to %s", args.output)
 
 
 # ──────────────────── Entrypoint ────────────────────
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -479,28 +525,48 @@ def main():
     subparsers = parser.add_subparsers(dest="command")
 
     # ── fit ──
-    p_fit = subparsers.add_parser("fit", help="Fit OpenMax parameters on training embeddings")
-    p_fit.add_argument("--embeddings", required=True, help=".npz embeddings from infer_transformer")
+    p_fit = subparsers.add_parser(
+        "fit", help="Fit OpenMax parameters on training embeddings"
+    )
+    p_fit.add_argument(
+        "--embeddings", required=True, help=".npz embeddings from infer_transformer"
+    )
     p_fit.add_argument("--labels", required=True, help="Final metadata TSV")
     p_fit.add_argument("--model", required=True, help="Trained model .pth")
-    p_fit.add_argument("--output", required=True, help="Output .pkl for fitted OpenMax params")
+    p_fit.add_argument(
+        "--output", required=True, help="Output .pkl for fitted OpenMax params"
+    )
     p_fit.add_argument("--device", default="cpu")
     p_fit.add_argument("--head_model", default=DEFAULT_HEAD_MODEL)
     p_fit.add_argument("--sep", default=DEFAULT_SEP)
     p_fit.add_argument("--batch_size", type=int, default=DEFAULT_BATCH_SIZE)
-    p_fit.add_argument("--alpha", type=int, default=10,
-                        help="Number of top classes to revise (α in paper)")
-    p_fit.add_argument("--tail_size", type=int, default=20,
-                        help="Number of tail distances for Weibull fitting (η)")
-    p_fit.add_argument("--distance_metric", default="euclid", choices=["euclid", "cosine"],
-                        help="Distance metric for MAV comparisons")
+    p_fit.add_argument(
+        "--alpha",
+        type=int,
+        default=10,
+        help="Number of top classes to revise (α in paper)",
+    )
+    p_fit.add_argument(
+        "--tail_size",
+        type=int,
+        default=20,
+        help="Number of tail distances for Weibull fitting (η)",
+    )
+    p_fit.add_argument(
+        "--distance_metric",
+        default="euclid",
+        choices=["euclid", "cosine"],
+        help="Distance metric for MAV comparisons",
+    )
 
     # ── predict ──
     p_pred = subparsers.add_parser("predict", help="Score samples using fitted OpenMax")
     p_pred.add_argument("--embeddings", required=True, help=".npz embeddings")
     p_pred.add_argument("--labels", required=True, help="Final metadata TSV")
     p_pred.add_argument("--model", required=True, help="Trained model .pth")
-    p_pred.add_argument("--openmax_params", required=True, help="Fitted .pkl from fit mode")
+    p_pred.add_argument(
+        "--openmax_params", required=True, help="Fitted .pkl from fit mode"
+    )
     p_pred.add_argument("--output", required=True, help="Output CSV for predictions")
     p_pred.add_argument("--device", default="cpu")
     p_pred.add_argument("--head_model", default=DEFAULT_HEAD_MODEL)
