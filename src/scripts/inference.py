@@ -67,7 +67,7 @@ class BaseModelBundle:
     """Tokenizer + pretrained base LM ready for inference."""
 
     tokenizer: object  # AutoTokenizer (deferred import)
-    model: torch.nn.Module  # AutoModelForMaskedLM
+    model: torch.nn.Module  # AutoModel (encoder only)
     model_max_length: int
     chunk_size: int
     stride: int
@@ -134,13 +134,11 @@ def load_base_model(
     Returns a bundle with pre-calculated ``chunk_size`` and ``stride``
     already clipped to the tokenizer's ``model_max_length``.
     """
-    from transformers import AutoModelForMaskedLM, AutoTokenizer
+    from transformers import AutoModel, AutoTokenizer
 
     device = torch.device(device)
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
-    model = AutoModelForMaskedLM.from_pretrained(model_name, trust_remote_code=True).to(
-        device
-    )
+    model = AutoModel.from_pretrained(model_name, trust_remote_code=True).to(device)
     model.eval()
 
     mml = getattr(tokenizer, "model_max_length", chunk_size)

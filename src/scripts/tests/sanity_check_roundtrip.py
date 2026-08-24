@@ -22,19 +22,23 @@ Usage (from repo root):
 
 import argparse
 import os
-import tempfile
 import random
+import tempfile
 
 import numpy as np
 import pandas as pd
-from tqdm import tqdm
-from Bio import SeqIO
 import torch
+from Bio import SeqIO
+from tqdm import tqdm
 
 # ── project imports ──
 from ..consts import (
-    DEFAULT_MODEL, DEFAULT_MAX_LEN, DEFAULT_SEP, CONTIG_SEP,
-    DEFAULT_CHUNK_SIZE, DEFAULT_STRIDE_RATIO,
+    CONTIG_SEP,
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MAX_LEN,
+    DEFAULT_MODEL,
+    DEFAULT_SEP,
+    DEFAULT_STRIDE_RATIO,
 )
 from ..inference import (
     embed_sequence,
@@ -86,14 +90,16 @@ def run_query_pipeline_eval(
             sequence=str(record.seq),
             device=device,
             max_length=max_length,
-            inference_mode="eval",          # <-- single window at pos 0
+            inference_mode="eval",  # <-- single window at pos 0
         )
 
         sel_cbl = np.asarray(cbl_list[0]).squeeze()
         sel_sero = np.asarray(sero_list[0]).squeeze()
         sel_z = np.asarray(z_list[0])
 
-        cbl_probs = torch.softmax(torch.tensor(sel_cbl, dtype=torch.float32), dim=-1).numpy()
+        cbl_probs = torch.softmax(
+            torch.tensor(sel_cbl, dtype=torch.float32), dim=-1
+        ).numpy()
         is_cbl = bool(cbl_probs[1] > 0.5)
 
         pred_serotype, _, _ = softmax_predict(sel_sero, idx_to_serotype)
@@ -124,7 +130,9 @@ def run_npz_eval_path(
     idx_to_serotype = head_bundle.idx_to_serotype
 
     X = np.load(npz_path, allow_pickle=True)
-    labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
+    labels_df = pd.read_csv(
+        labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ","
+    )
     labels_df["sample_id"] = get_sample_id(labels_df)
     labels_df["sample_key"] = (
         labels_df["Is_capsule"].map(lambda x: "cbl" if x else "non-cbl")
@@ -133,7 +141,9 @@ def run_npz_eval_path(
     )
 
     rows = {}
-    for _, row in tqdm(labels_df.iterrows(), desc="NPZ eval path", total=len(labels_df)):
+    for _, row in tqdm(
+        labels_df.iterrows(), desc="NPZ eval path", total=len(labels_df)
+    ):
         pid = row["sample_id"]
         if pid not in record_ids:
             continue
@@ -166,10 +176,14 @@ def sample_fasta(fasta_path, labels_path, n_per_serotype, seed=42, n_shortest=20
     ``inference.embed_sequence`` historically diverged (drop vs. single-chunk fallback).
 
     Returns (tmp_fasta_path, set-of-record-ids-sampled)."""
-    labels_df = pd.read_csv(labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ",")
+    labels_df = pd.read_csv(
+        labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ","
+    )
     labels_df = labels_df[labels_df["Serotype"] != "Non-typeable"]
     labels_df = labels_df[labels_df["Is_capsule"].astype(bool)]
-    labels_df["fasta_key"] = labels_df.index + CONTIG_SEP + labels_df["Contig_ID"].astype(str)
+    labels_df["fasta_key"] = (
+        labels_df.index + CONTIG_SEP + labels_df["Contig_ID"].astype(str)
+    )
     valid_keys = set(labels_df["fasta_key"])
     rng = random.Random(seed)
     sampled_ids = set()
@@ -178,7 +192,11 @@ def sample_fasta(fasta_path, labels_path, n_per_serotype, seed=42, n_shortest=20
         n = min(n_per_serotype, len(ids))
         sampled_ids.update(rng.sample(ids, n))
 
-    logger.info("Sampled %d records across %d serotypes.", len(sampled_ids), labels_df['Serotype'].nunique())
+    logger.info(
+        "Sampled %d records across %d serotypes.",
+        len(sampled_ids),
+        labels_df["Serotype"].nunique(),
+    )
 
     # ── Augment with the shortest CBL records to probe drop-vs-fallback divergence ──
     if n_shortest > 0:
@@ -234,12 +252,10 @@ def probe_embedding_paths(
     by the old ``embed_transformer.py`` (no chunks) are exercised here without needing
     an npz entry.
     """
-    from transformers import AutoTokenizer, AutoModelForMaskedLM
+    from transformers import AutoTokenizer, AutoModel
 
     tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
-    base = AutoModelForMaskedLM.from_pretrained(
-        base_model_name, trust_remote_code=True
-    ).to(device)
+    base = AutoModel.from_pretrained(base_model_name, trust_remote_code=True).to(device)
     base.eval()
     mml = getattr(tokenizer, "model_max_length", chunk_size)
     cs = min(chunk_size, mml)
@@ -262,7 +278,11 @@ def probe_embedding_paths(
             q_chunks = [seq]
         q_pooled = embed_chunks(q_chunks, tokenizer, base, device, mml).numpy()
 
-        max_abs_diff = float(np.max(np.abs(tr_pooled - q_pooled))) if tr_pooled.shape == q_pooled.shape else float("inf")
+        max_abs_diff = (
+            float(np.max(np.abs(tr_pooled - q_pooled)))
+            if tr_pooled.shape == q_pooled.shape
+            else float("inf")
+        )
         rows[record.id] = {
             "seq_len": len(record.seq),
             "n_chunks_train": len(tr_chunks),
@@ -274,15 +294,27 @@ def probe_embedding_paths(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Round-trip sanity check: query pipeline vs npz eval path")
+    parser = argparse.ArgumentParser(
+        description="Round-trip sanity check: query pipeline vs npz eval path"
+    )
     parser.add_argument("--fasta", required=True, help="Original training FASTA")
     parser.add_argument("--labels", required=True, help="Final metadata TSV")
     parser.add_argument("--model", required=True, help="Trained model .pth")
-    parser.add_argument("--inference_npz", required=True, help="Inference .npz from infer_trihead_transformer")
-    parser.add_argument("--output_dir", required=True, help="Directory for output report")
+    parser.add_argument(
+        "--inference_npz",
+        required=True,
+        help="Inference .npz from infer_trihead_transformer",
+    )
+    parser.add_argument(
+        "--output_dir", required=True, help="Directory for output report"
+    )
     parser.add_argument("--samples_per_serotype", type=int, default=5)
-    parser.add_argument("--n_shortest", type=int, default=20,
-                        help="Also pull the N shortest CBL records to probe short-sequence handling.")
+    parser.add_argument(
+        "--n_shortest",
+        type=int,
+        default=20,
+        help="Also pull the N shortest CBL records to probe short-sequence handling.",
+    )
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--base_model", default=DEFAULT_MODEL)
     parser.add_argument("--head_model", default="transformer_trihead_lr")
@@ -330,16 +362,25 @@ def main():
     # 4) Join and compare
     logger.info("=== Step 4: Comparing results ===")
     common = query_df.index.intersection(npz_df.index)
-    logger.info("Common samples: %d (query: %d, npz: %d)", len(common), len(query_df), len(npz_df))
+    logger.info(
+        "Common samples: %d (query: %d, npz: %d)",
+        len(common),
+        len(query_df),
+        len(npz_df),
+    )
 
     if len(common) == 0:
         os.unlink(tmp_fasta)
-        raise ValueError("No common samples between query and npz results. Check ID formats.")
+        raise ValueError(
+            "No common samples between query and npz results. Check ID formats."
+        )
 
     merged = query_df.loc[common].join(npz_df.loc[common])
 
     # Comparisons
-    serotype_match = (merged["query_pred_serotype"] == merged["npz_pred_serotype"]).astype(int)
+    serotype_match = (
+        merged["query_pred_serotype"] == merged["npz_pred_serotype"]
+    ).astype(int)
     cbl_match = (merged["query_is_cbl"] == merged["npz_is_cbl"]).astype(int)
 
     cosine_sims = []
@@ -401,10 +442,14 @@ def main():
         f.write(report_text)
 
     # Save detailed CSV (drop array columns)
-    detail_df = merged.drop(columns=[
-        "query_serotype_logits", "npz_serotype_logits",
-        "query_embedding", "npz_embedding"
-    ])
+    detail_df = merged.drop(
+        columns=[
+            "query_serotype_logits",
+            "npz_serotype_logits",
+            "query_embedding",
+            "npz_embedding",
+        ]
+    )
     detail_df.to_csv(os.path.join(args.output_dir, "roundtrip_details.csv"))
 
     # 6) Embedding-path probe — checks the train/query divergence on short sequences
