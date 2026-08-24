@@ -5,7 +5,7 @@ from tqdm import tqdm
 import torch
 import numpy as np
 from Bio import SeqIO
-from transformers import AutoTokenizer, AutoModelForMaskedLM
+from transformers import AutoTokenizer, AutoModel
 
 from .consts import (
     DEFAULT_MODEL,
@@ -17,6 +17,8 @@ from .logging_config import get_logger
 from .utils import chunk_sequence, embed_chunks
 
 logger = get_logger(__name__)
+
+DEFAULT_RECORDS_PER_BATCH = 32
 
 
 def main():
@@ -49,6 +51,12 @@ def main():
         default=DEFAULT_MAX_LEN,
         help="Maximum sequence length for the CONTIGS",
     )
+    parser.add_argument(
+        "--records_per_batch",
+        type=int,
+        default=DEFAULT_RECORDS_PER_BATCH,
+        help="How many FASTA records to fold into one base-model forward.",
+    )
     args = parser.parse_args()
 
     # Set seeds for reproducible embeddings
@@ -62,9 +70,10 @@ def main():
         os.makedirs(args.out_dir)
 
     tokenizer = AutoTokenizer.from_pretrained(args.model_name, trust_remote_code=True)
-    model = AutoModelForMaskedLM.from_pretrained(
-        args.model_name, trust_remote_code=True
-    ).to(args.device)
+    # AutoModel returns the encoder only — drops the unused MaskedLM head.
+    model = AutoModel.from_pretrained(args.model_name, trust_remote_code=True).to(
+        args.device
+    )
     model.eval()  # Critical: Set to evaluation mode for deterministic embeddings
 
     # NOTE: Make sure any changes is synced with the query processing script
@@ -77,27 +86,59 @@ def main():
     logger.info("Loading sequences from %s...", args.fasta)
     total = sum(1 for _ in SeqIO.parse(args.fasta, "fasta"))
 
+    # ── Cross-record batching ───────────────────────────────
+    # Buffer records, fold all their chunks into one forward, slice back.
+    pending: list[dict] = []  # {sample_name, chunks_path, chunks}
+
+    def flush(buf):
+        if not buf:
+            return
+        all_chunks: list[str] = []
+        offsets: list[tuple[int, int]] = []
+        cursor = 0
+        for entry in buf:
+            n = len(entry["chunks"])
+            offsets.append((cursor, cursor + n))
+            all_chunks.extend(entry["chunks"])
+            cursor += n
+        try:
+            pooled = embed_chunks(
+                all_chunks, tokenizer, model, args.device, model_max_length
+            )  # (sum_chunks, D)
+        except Exception as exc:
+            names = ", ".join(e["sample_name"] for e in buf)
+            logger.error("Error embedding batch [%s]: %s", names, exc)
+            raise
+        for entry, (a, b) in zip(buf, offsets):
+            np.save(entry["chunks_path"], pooled[a:b].numpy())
+
     for record in tqdm(SeqIO.parse(args.fasta, "fasta"), total=total):
         seq_id = record.id
         sample_name = seq_id.split("__")[0]  # Public ID + Contig ID
         chunks_path = os.path.join(args.out_dir, f"{sample_name}.npy")
         if os.path.exists(chunks_path):
             logger.info("Skipping %s as it already exists.", sample_name)
+            continue
 
         chunks = chunk_sequence(
             str(record.seq)[: args.seq_max_len], chunk_size, stride
-        )  # TODO This is terribly wrong. WIll fix for the new data (SPAdes).
+        )
 
-        if len(chunks) == 0:
-            logger.warning("Skipping %s due to no valid chunks.", sample_name)
-            continue
-        try:
-            pooled = embed_chunks(
-                chunks, tokenizer, model, args.device, model_max_length
-            )  # shape (L, D)
-            np.save(chunks_path, pooled.numpy())  # tensor [L, D]
-        except Exception as e:
-            logger.error("Error processing %s: %s", sample_name, e)
+        if not chunks:
+            chunks = [str(record.seq)[: args.seq_max_len]]
+            logger.warning(
+                "Sequence %s shorter than chunk_size; falling back to single chunk.",
+                sample_name,
+            )
+
+        pending.append(
+            {"sample_name": sample_name, "chunks_path": chunks_path, "chunks": chunks}
+        )
+        if len(pending) >= args.records_per_batch:
+            flush(pending)
+            pending = []
+
+    flush(pending)
 
     logger.info("Saved %d chunked sequences to %s", total, args.out_dir)
 

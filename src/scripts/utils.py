@@ -256,21 +256,36 @@ def chunk_sequence(seq, chunk_size=512, stride=256):
 
 
 def embed_chunks(chunks, tokenizer, model, device, max_length):
-    # Ensure model is in eval mode for consistent embeddings
+    """Tokenize chunks, run the base model, return mean-pooled per-chunk vectors.
+
+    Uses ``padding="longest"`` so mixed-length chunks (e.g. the short-sequence
+    fallback in ``embed_transformer.py``) and cross-record batches don't crash
+    ``return_tensors="pt"``. Pads are masked out before the mean.
+    """
     model.eval()
     inputs = tokenizer(
         chunks,
         return_tensors="pt",
-        # padding="max_length",  # TODO
-        # truncation=True,  # TODO
-        # max_length=max_length  # TODO
+        padding="longest",
+        truncation=True,
+        max_length=max_length,
     )
     inputs = {k: v.to(device) for k, v in inputs.items()}
-    with torch.no_grad():
-        outputs = model(**inputs, output_hidden_states=True)
-        last_hidden = outputs.hidden_states[-1]  # (B, T, D)
-        pooled = last_hidden.mean(dim=1)  # (B, D)
-    return pooled.cpu()
+    attention_mask = inputs.get("attention_mask")
+    autocast = torch.autocast(
+        device_type="cuda" if str(device).startswith("cuda") else "cpu",
+        dtype=torch.bfloat16,
+        enabled=str(device).startswith("cuda"),
+    )
+    with torch.no_grad(), autocast:
+        outputs = model(**inputs)
+        last_hidden = outputs.last_hidden_state  # (B, T, D)
+        if attention_mask is not None:
+            mask = attention_mask.unsqueeze(-1).to(last_hidden.dtype)  # (B, T, 1)
+            pooled = (last_hidden * mask).sum(dim=1) / mask.sum(dim=1).clamp(min=1)
+        else:
+            pooled = last_hidden.mean(dim=1)
+    return pooled.float().cpu()
 
 
 def get_sample_id(df: pd.DataFrame, sep=CONTIG_SEP) -> pd.Series:

@@ -92,8 +92,46 @@ def main():
             "%d embedding files have no metadata entry (ignored)", len(missing_metadata)
         )
 
+    pre_count = labels.copy()
     labels = labels[labels["file_name"].isin(embedded)]
     labels = labels.drop(columns=["file_name"])
+
+    # ── Per-serotype retention audit ─────────────────────────
+    pre_caps = pre_count[pre_count["Is_capsule"] == 1]
+    post_caps = labels[labels["Is_capsule"] == 1]
+    before = pre_caps.groupby("Serotype").size()
+    after = post_caps.groupby("Serotype").size().reindex(before.index, fill_value=0)
+    retention = (after / before).fillna(0.0)
+    audit = (
+        pd.DataFrame(
+            {"before": before, "after": after, "retention": retention.round(4)}
+        )
+        .sort_values("retention")
+    )
+    audit_path = output_path / "embedding_retention_audit.csv"
+    audit.to_csv(audit_path)
+    logger.info("Per-serotype retention audit saved to %s", audit_path)
+
+    overall = len(post_caps) / max(len(pre_caps), 1)
+    logger.info(
+        "CBL retention: %d/%d (%.1f%%) overall after embedding",
+        len(post_caps),
+        len(pre_caps),
+        100 * overall,
+    )
+    bad = audit[(audit["retention"] < 0.8) & (audit["before"] >= 5)]
+    if not bad.empty:
+        logger.warning(
+            "Serotypes with <80%% retention (likely under-trained, biased predictions on test):\n%s",
+            bad.head(20).to_string(),
+        )
+        if (bad["retention"] < 0.5).any():
+            logger.error(
+                "%d serotypes lost >50%% of samples during embedding. "
+                "Train/test class distributions are now skewed — fix embed_transformer.py "
+                "before training.",
+                int((bad["retention"] < 0.5).sum()),
+            )
 
     output_file = output_path / "final_metadata.csv"
     labels.to_csv(output_file, index=False)

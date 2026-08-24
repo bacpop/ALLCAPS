@@ -1,9 +1,15 @@
 """Split paired FASTA and metadata files into train/test sets.
 
-Pools all sources, applies unified label preprocessing, then performs
-stratified train/test splitting with per-source ratios.  Serotypes that
-are globally too rare are placed entirely in the training set, ensuring
-every label in the test set also appears in training.
+Pools all sources, applies unified label preprocessing, then performs a
+sample-grouped, stratified train/test split with per-source ratios.
+
+The split unit is the *sample* (``--id_column``, e.g. Public_ID), not the
+contig: every contig of a sample is kept on the same side, so sibling contigs
+of one assembly never straddle the train/test boundary (no leakage). Serotypes
+with too few distinct *samples* to appear on both sides -- globally rarer than
+``MIN_SEROTYPE_COUNT`` samples, or too rare within a source -- are placed
+entirely in training, ensuring every label in the test set also appears in
+training. A runtime assertion guards the no-leakage invariant.
 """
 
 import argparse
@@ -131,6 +137,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     serotype_col = args.serotype_column
+    id_col = args.id_column  # sample-level grouping key (e.g. Public_ID)
 
     # ── Phase 1: Load and align every source ─────────────────────────
     all_records: list = []
@@ -145,8 +152,9 @@ def main():
 
     combined = pd.concat(meta_parts, ignore_index=True)
     logger.info(
-        "Combined pool: %d samples, %d serotypes",
+        "Combined pool: %d contigs, %d samples, %d serotypes",
         len(combined),
+        combined[id_col].nunique(),
         combined[serotype_col].nunique(),
     )
 
@@ -154,19 +162,22 @@ def main():
     n_before = len(combined)
     combined = preprocess_metadata(combined, serotype_column=serotype_col)
     logger.info(
-        "After preprocessing: %d samples (dropped %d), %d serotypes",
+        "After preprocessing: %d contigs (dropped %d), %d serotypes",
         len(combined),
         n_before - len(combined),
         combined[serotype_col].nunique(),
     )
 
-    # ── Phase 3: Global rare-serotype detection ──────────────────────
-    global_counts = combined[serotype_col].value_counts()
+    # ── Phase 3: Global rare-serotype detection (counted in samples) ──
+    # Rarity is measured in distinct samples (Public_ID), not contigs, so a
+    # serotype seen across many contigs of only a handful of samples is still
+    # treated as rare and kept entirely in train.
+    global_counts = combined.groupby(serotype_col)[id_col].nunique()
     rare_global = set(global_counts[global_counts < MIN_SEROTYPE_COUNT].index)
     if rare_global:
         n_rare = combined[serotype_col].isin(rare_global).sum()
         logger.info(
-            "Globally rare serotypes (all -> train): %s (%d samples)",
+            "Globally rare serotypes (all -> train): %s (%d contigs)",
             sorted(rare_global),
             n_rare,
         )
@@ -175,41 +186,75 @@ def main():
     train_idx: list[int] = combined.index[rare_mask].tolist()
     test_idx: list[int] = []
 
-    # ── Phase 4: Per-source stratified split ─────────────────────────
+    # ── Phase 4: Per-source, sample-grouped stratified split ─────────
+    # The split unit is the *sample* (id_col, e.g. Public_ID), never the
+    # contig: every contig of a sample goes to the same side, which eliminates
+    # train/test leakage. Stratification and rare-class gating are therefore
+    # also expressed in sample units.
     non_rare = combined[~rare_mask]
     for src_i, ratio in enumerate(ratios):
         src = non_rare[non_rare["_source"] == src_i]
         if len(src) == 0:
             continue
+
+        # Collapse contigs to one row per sample carrying its serotype. One
+        # serotype per sample is guaranteed upstream (the drop_duplicates
+        # merge in build_contig_metadata); .first() is a defensive tie-break.
+        group_serotype = src.groupby(id_col)[serotype_col].first()
+        group_ids = group_serotype.index.to_numpy()
+        group_labels = group_serotype.to_numpy()
         logger.info(
-            "Source %d: %d splittable samples, ratio=%s", src_i, len(src), ratio
+            "Source %d: %d samples across %d contigs, ratio=%s",
+            src_i,
+            len(group_ids),
+            len(src),
+            ratio,
         )
 
-        # Serotypes too small *within this source* for stratification
+        # Serotypes with too few *samples* in this source to place one on each
+        # side of the split -> keep all their contigs in train. The 1e-9 guards
+        # against float error (e.g. 1 - 0.8 = 0.1999.. would inflate the ceil).
         test_ratio = 1 - ratio
-        min_per_class = max(int(np.ceil(1.0 / test_ratio)), 2)
-        src_counts = src[serotype_col].value_counts()
+        min_per_class = max(int(np.ceil(1.0 / test_ratio - 1e-9)), 2)
+        src_counts = pd.Series(group_labels).value_counts()
         src_rare = set(src_counts[src_counts < min_per_class].index)
         if src_rare:
             logger.info("Source-rare (-> train): %s", sorted(src_rare))
-            train_idx.extend(src.index[src[serotype_col].isin(src_rare)].tolist())
-            src = src[~src[serotype_col].isin(src_rare)]
+            rare_group_mask = np.isin(group_labels, list(src_rare))
+            rare_groups = set(group_ids[rare_group_mask])
+            train_idx.extend(src.index[src[id_col].isin(rare_groups)].tolist())
+            group_ids = group_ids[~rare_group_mask]
+            group_labels = group_labels[~rare_group_mask]
 
-        if len(src) == 0:
+        if len(group_ids) == 0:
             continue
 
-        tr, te = train_test_split(
-            src.index.to_numpy(),
+        tr_g, te_g = train_test_split(
+            group_ids,
             test_size=test_ratio,
-            stratify=src[serotype_col],
+            stratify=group_labels,
             random_state=rng.integers(0, 2**32 - 1),
         )
-        train_idx.extend(tr.tolist())
-        test_idx.extend(te.tolist())
+        tr_g, te_g = set(tr_g), set(te_g)
+        train_idx.extend(src.index[src[id_col].isin(tr_g)].tolist())
+        test_idx.extend(src.index[src[id_col].isin(te_g)].tolist())
 
-    # ── Phase 5: Verify label consistency ────────────────────────────
+    # ── Phase 5: Verify no sample leakage and label consistency ──────
     train_meta = combined.loc[train_idx]
     test_meta = combined.loc[test_idx]
+
+    # Hard guard: no sample (Public_ID) may appear on both sides.
+    overlap = set(train_meta[id_col]) & set(test_meta[id_col])
+    assert not overlap, (
+        f"Sample leakage: {len(overlap)} {id_col}(s) in both train and test, "
+        f"e.g. {sorted(overlap)[:10]}"
+    )
+    logger.info(
+        "No sample leakage: %d train samples / %d test samples, disjoint.",
+        train_meta[id_col].nunique(),
+        test_meta[id_col].nunique(),
+    )
+
     train_labels = set(train_meta[serotype_col])
     test_labels = set(test_meta[serotype_col])
     test_only = test_labels - train_labels
@@ -218,7 +263,9 @@ def main():
     else:
         logger.info("All %d test serotypes are present in train.", len(test_labels))
 
-    logger.info("Train: %d | Test: %d", len(train_meta), len(test_meta))
+    logger.info(
+        "Train: %d contigs | Test: %d contigs", len(train_meta), len(test_meta)
+    )
 
     # ── Phase 6: Write outputs ───────────────────────────────────────
     train_records = [all_records[i] for i in train_meta["_rec_offset"]]

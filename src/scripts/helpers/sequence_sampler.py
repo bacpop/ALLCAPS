@@ -104,15 +104,23 @@ def main(args):
     if args.fetch_fasta:
         logger.info("Reading sequences from %s...", args.sequences)
         for record in SeqIO.parse(args.sequences, "fasta"):
-            public_id = record.id
-            id_mapping[public_id.split("#")[0]] = record
+            # Record ids are `Public_ID#Contig_ID` (non-CBL keeps its `NONCBL#`
+            # prefix, so strip only the trailing contig field). A sample's cps
+            # locus can span several contigs — keep every one of them, otherwise
+            # later contigs overwrite earlier ones and the query set silently
+            # collapses to one arbitrary contig per sample.
+            public_id = record.id.rsplit("#", 1)[0]
+            id_mapping.setdefault(public_id, []).append(record)
 
     sampled_sequences = []
     sampled_ids = []  # Track sampled IDs for labels subset
     if len(serogroups) == 1 or args.sample_all:
         # Single serogroup or sampling all: use original logic
         for sg in serogroups:
-            sg_indices = labels[labels[serotype_column] == sg].index
+            # One entry per sample: `labels` is indexed by Public_ID and holds one
+            # row per contig, so a multi-contig sample would otherwise be visited
+            # (and emitted) once per contig.
+            sg_indices = labels[labels[serotype_column] == sg].index.unique()
             if args.sample_all:
                 sampled_indices = sg_indices.tolist()
             else:
@@ -126,15 +134,14 @@ def main(args):
             for idx in sampled_indices:
                 sampled_ids.append(idx)  # Track sampled ID
                 if args.fetch_fasta:
-                    # contig_id = labels.loc[idx, 'Contig_ID']
-                    fasta_key = f"{idx}"  # + "#{contig_id}"
-                    record = id_mapping.get(fasta_key, None)
-                    if record is None:
+                    fasta_key = f"{idx}"
+                    records = id_mapping.get(fasta_key)
+                    if not records:
                         logger.warning(
                             "Sequence for ID %s not found in the FASTA file.", fasta_key
                         )
                         continue
-                    sampled_sequences.append(record)
+                    sampled_sequences.extend(records)
                 else:
                     if is_X_npz:
                         # For NPZ files, the key should match the sample ID format
@@ -162,8 +169,11 @@ def main(args):
                 "sample_size must be specified for weighted sampling across multiple serogroups"
             )
 
+        # Counted in samples (unique Public_ID), not contig rows, so the weights
+        # and the per-serogroup cap agree with the deduplicated sg_indices below.
         serogroup_counts = {
-            sg: len(labels[labels[serotype_column] == sg]) for sg in serogroups
+            sg: labels[labels[serotype_column] == sg].index.nunique()
+            for sg in serogroups
         }
         total_samples = sum(serogroup_counts.values())
         serogroup_sample_sizes = {}
@@ -187,7 +197,7 @@ def main(args):
             )
 
         for sg in serogroups:
-            sg_indices = labels[labels[serotype_column] == sg].index
+            sg_indices = labels[labels[serotype_column] == sg].index.unique()
             sample_size_sg = serogroup_sample_sizes[sg]
 
             if sample_size_sg > 0:
@@ -200,16 +210,15 @@ def main(args):
                 for idx in sampled_indices:
                     sampled_ids.append(idx)  # Track sampled ID
                     if args.fetch_fasta:
-                        # contig_id = labels.loc[idx, 'Contig_ID']
-                        fasta_key = f"{idx}"  # + "#{contig_id}"
-                        record = id_mapping.get(fasta_key, None)
-                        if record is None:
+                        fasta_key = f"{idx}"
+                        records = id_mapping.get(fasta_key)
+                        if not records:
                             logger.warning(
                                 "Sequence for ID %s not found in the FASTA file.",
                                 fasta_key,
                             )
                             continue
-                        sampled_sequences.append(record)
+                        sampled_sequences.extend(records)
                     else:
                         if is_X_npz:
                             # For NPZ files, the key should match the sample ID format

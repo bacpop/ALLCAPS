@@ -627,6 +627,7 @@ def main(args):
 
     dataset_class = DatasetRegistry.get_dataset_class(dataset_name)
     skf = StratifiedKFold(n_splits=k_folds, shuffle=True, random_state=random_state)
+    cv_fold_metrics: list[dict] = []
     for fold, (train_idx, test_idx) in enumerate(
         skf.split(np.zeros(len(strat_labels)), strat_labels)
     ):
@@ -712,6 +713,16 @@ def main(args):
         genogroup_loss_fn = nn.CrossEntropyLoss(weight=geno_weights)
 
         best_loss, patience_counter = float("inf"), 0
+        best_fold = {
+            "fold": fold + 1,
+            "epoch": 0,
+            "val_loss": float("inf"),
+            "cbl_accuracy": 0.0,
+            "serotype_accuracy": 0.0,
+            "genogroup_accuracy": 0.0,
+            "n_train": int(len(train_idx)),
+            "n_val": int(len(test_idx)),
+        }
 
         for epoch in tqdm(range(args.epochs), desc=f"Training Fold {fold + 1}"):
             train_one_epoch(
@@ -753,11 +764,54 @@ def main(args):
             if test_loss < best_loss:
                 best_loss = test_loss
                 patience_counter = 0
+                best_fold = {
+                    "fold": fold + 1,
+                    "epoch": epoch + 1,
+                    "val_loss": float(test_loss),
+                    "cbl_accuracy": float(cbl_accuracy),
+                    "serotype_accuracy": float(serotype_accuracy),
+                    "genogroup_accuracy": float(genogroup_accuracy),
+                    "n_train": int(len(train_idx)),
+                    "n_val": int(len(test_idx)),
+                }
             else:
                 patience_counter += 1
                 if patience_counter >= args.early_stopping:
                     logger.info("Early stopping triggered.")
                     break
+        cv_fold_metrics.append(best_fold)
+        logger.info(
+            "Fold %d best held-out — epoch %d: val_loss=%.4f, sero_acc=%.4f, geno_acc=%.4f, cbl_acc=%.4f",
+            best_fold["fold"],
+            best_fold["epoch"],
+            best_fold["val_loss"],
+            best_fold["serotype_accuracy"],
+            best_fold["genogroup_accuracy"],
+            best_fold["cbl_accuracy"],
+        )
+
+    # ── Persist held-out CV summary alongside the model ──
+    cv_summary_path = os.path.splitext(args.output)[0] + "_cv_summary.json"
+    sero_accs = [m["serotype_accuracy"] for m in cv_fold_metrics]
+    geno_accs = [m["genogroup_accuracy"] for m in cv_fold_metrics]
+    cbl_accs = [m["cbl_accuracy"] for m in cv_fold_metrics]
+    cv_summary = {
+        "k_folds": k_folds,
+        "per_fold": cv_fold_metrics,
+        "mean_serotype_accuracy": float(np.mean(sero_accs)) if sero_accs else 0.0,
+        "std_serotype_accuracy": float(np.std(sero_accs)) if sero_accs else 0.0,
+        "mean_genogroup_accuracy": float(np.mean(geno_accs)) if geno_accs else 0.0,
+        "mean_cbl_accuracy": float(np.mean(cbl_accs)) if cbl_accs else 0.0,
+    }
+    with open(cv_summary_path, "w") as f:
+        json.dump(cv_summary, f, indent=2)
+    logger.info(
+        "CV held-out: serotype %.4f ± %.4f over %d folds. Wrote summary to %s",
+        cv_summary["mean_serotype_accuracy"],
+        cv_summary["std_serotype_accuracy"],
+        k_folds,
+        cv_summary_path,
+    )
 
     # Retrain on all data
     logger.info("Retraining on all data...")
