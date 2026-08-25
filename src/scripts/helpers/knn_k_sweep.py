@@ -34,7 +34,7 @@ import pandas as pd
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.neighbors import NearestNeighbors
 
-from ..knn_ood import _load_id_embeddings, _load_query_embeddings
+from ..knn_ood import _as_f64, _load_id_embeddings, _load_query_embeddings
 from ..logging_config import get_logger
 from ..utils import map_serotype_to_group
 
@@ -125,8 +125,11 @@ def _sweep_one_fold(
             logger.warning("Fold %s: missing %s — skipping", fold_safe, required.name)
             return None
 
+    # float64 before any distance work — see knn_ood._as_f64. This module builds its
+    # own index rather than going through KnnOOD, so it needs the promotion too.
     X_id, _, _ = _load_id_embeddings(str(inference_path), str(labels_path))
     X_novel, _ = _load_query_embeddings(str(query_path))
+    X_id, X_novel = _as_f64(X_id), _as_f64(X_novel)
 
     # Clamp k grid to training-set size (drop k values bigger than n_id-1)
     effective_grid = [k for k in k_grid if k <= len(X_id) - 1]
