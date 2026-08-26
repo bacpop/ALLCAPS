@@ -445,7 +445,7 @@ def parse_args() -> argparse.Namespace:
                    default=list(DEFAULT_K_GRID),
                    help="Comma-separated list of k values to sweep "
                         f"(default: {','.join(str(k) for k in DEFAULT_K_GRID)})")
-    p.add_argument(" ", type=int, default=DEFAULT_REFERENCE_K,
+    p.add_argument("--reference_k", type=int, default=DEFAULT_REFERENCE_K,
                    help="Reference k for the 'tuning headroom' diagnostic "
                         f"(default {DEFAULT_REFERENCE_K}; should be in --k_grid)")
     p.add_argument("--deploy_k", type=int, default=DEFAULT_DEPLOY_K,
