@@ -22,6 +22,9 @@ base_model: "neuralbioinfo/prokbert-mini-long"
 model_params: '{"temperature": 0.07, "k_folds": 5, "weight_fine": 1, "weight_coarse": 0.4, "random_state": 42, "embedding_dim": 384}'
 sketch_k: 31
 sketch_size: 10000
-knn_k: 5
+# kNN novelty detection (deployed configuration)
+knn_k: 1                        # distance to the k-th nearest training locus
+knn_threshold_percentile: 95.0  # threshold = this percentile of training LOO k-th-NN distances
+knn_max_k: 5                    # also emit a top-K neighbour report per query
 lda_components: 5
 novelty_thresholds: "0.1,0.2,0.9,0.98"

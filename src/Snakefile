@@ -1,5 +1,9 @@
 import sys, os
-sys.path.append(os.path.join(os.path.dirname(__file__), "scripts"))
+
+# `workflow.basedir` is this Snakefile's directory. Do NOT use __file__ here — inside a
+# Snakefile it resolves to snakemake's own workflow.py, so the append silently pointed at
+# the snakemake install and `from consts import *` failed with ModuleNotFoundError.
+sys.path.append(os.path.join(workflow.basedir, "scripts"))
 
 from consts import *
 
@@ -39,10 +43,10 @@ rule all:
         f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
         f"{RESULTS_DIR}/classification_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
-        # Novel detection outputs
+        # Novel detection outputs — energy (query_results) + kNN (deployed detector)
         f"{RESULTS_DIR}/query_results.csv",
-        # OpenMax calibration
-        f"{RESULTS_DIR}/openmax_params.pkl",
+        f"{RESULTS_DIR}/knn_id_distances.csv",
+        f"{RESULTS_DIR}/knn_query_distances.csv",
         # LOO targets (one set per held-out serotype)
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/classification_report.txt", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/confusion_matrix_df.csv", heldout=SEROTYPES),
@@ -188,7 +192,7 @@ rule embed_chunks:
     shell:
         """
         python -m scripts.trihead.infer_trihead_transformer \
-            --embeddings_dir {input.embeddings} \
+            --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
             --output {output} \
@@ -355,14 +359,14 @@ rule novel_detection:
     input:
         labels=f"{config['data_dir']}/final_metadata.csv",
         trained_model=f"{RESULTS_DIR}/transformer_model.pth",
-        openmax_params=f"{RESULTS_DIR}/openmax_params.pkl",
     params:
         query=config["query_path"],
         model_params=config["model_params"],
         base_model=config["base_model"],
         head_model="transformer_trihead_lr",
     output:
-        f"{RESULTS_DIR}/query_results.csv",
+        results=f"{RESULTS_DIR}/query_results.csv",
+        embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
     shell:
         """
         python -m scripts.trihead.process_trihead_query \
@@ -372,48 +376,90 @@ rule novel_detection:
             --head_model {params.head_model} \
             --model_path {input.trained_model} \
             --model_params '{params.model_params}' \
-            --inference_mode eval \
-            --openmax_params {input.openmax_params}
+            --inference_mode eval
         """
 
-rule openmax_calibration:
-    """Fit OpenMax parameters on the training set's projected embeddings."""
+
+# ═══════════════════════════════════════════════════════════════
+#  kNN novelty detection (the deployed detector)
+#
+#  Scores a query's cosine distance to the k-th nearest *training* cps embedding.
+#  `novel_detection` above reports the energy baseline; these rules add the kNN
+#  call. Defaults match the deployed configuration: k=1, threshold at the 95th
+#  percentile of the training leave-one-out k-th-NN distances.
+# ═══════════════════════════════════════════════════════════════
+
+KNN_K = config.get("knn_k", 1)
+KNN_PERCENTILE = config.get("knn_threshold_percentile", 95.0)
+KNN_MAX_K = config.get("knn_max_k", 5)
+
+
+rule knn_fit:
+    """Build the nearest-neighbour index from the training (in-distribution) embeddings."""
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
-        model=f"{RESULTS_DIR}/transformer_model.pth",
         labels=f"{config['data_dir']}/final_metadata.csv",
     output:
-        f"{RESULTS_DIR}/openmax_params.pkl",
+        f"{RESULTS_DIR}/knn_index.pkl",
     params:
-        device=config["device"],
-        model_params=config["model_params"],
+        k=KNN_K,
     shell:
         """
-        python -m scripts.openmax fit \
+        python -m scripts.knn_ood fit \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
-            --model {input.model} \
             --output {output} \
-            --device {params.device}
+            --k {params.k} \
+            --distance_metric cosine
         """
 
-rule openmax_calibration_loo:
-    """For each held-out serotype, fit OpenMax on the remaining serotypes — 
-    enables evaluation of whether OpenMax correctly rejects the held-out serotype."""
+
+rule knn_predict_id:
+    """Score the training set against its own index (self-match excluded).
+
+    Every serotype here is in-distribution, so the flagged fraction is the
+    false-positive rate at the chosen threshold — the honest calibration check."""
     input:
-        embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
-        model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
         labels=f"{config['data_dir']}/final_metadata.csv",
+        knn_index=f"{RESULTS_DIR}/knn_index.pkl",
     output:
-        f"{RESULTS_DIR}/loo/{{heldout}}/openmax_params.pkl",
+        f"{RESULTS_DIR}/knn_id_distances.csv",
     params:
-        device=config["device"],
+        percentile=KNN_PERCENTILE,
     shell:
         """
-        python -m scripts.openmax fit \
+        python -m scripts.knn_ood predict \
+            --input_type id \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
-            --model {input.model} \
-            --output {output} \
-            --device {params.device}
+            --knn_index {input.knn_index} \
+            --threshold_percentile {params.percentile} \
+            --output {output}
+        """
+
+
+rule knn_predict_query:
+    """Score the query embeddings written by `novel_detection`.
+
+    `--max_k` additionally writes `<output>_topk.csv`, a long-format table of the
+    top-K neighbours per query (rank, neighbour id, serotype, genogroup, distance)."""
+    input:
+        embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
+        knn_index=f"{RESULTS_DIR}/knn_index.pkl",
+    output:
+        distances=f"{RESULTS_DIR}/knn_query_distances.csv",
+        topk=f"{RESULTS_DIR}/knn_query_distances_topk.csv",
+    params:
+        percentile=KNN_PERCENTILE,
+        max_k=KNN_MAX_K,
+    shell:
+        """
+        python -m scripts.knn_ood predict \
+            --input_type query \
+            --embeddings {input.embeddings} \
+            --knn_index {input.knn_index} \
+            --threshold_percentile {params.percentile} \
+            --max_k {params.max_k} \
+            --output {output.distances}
         """

@@ -1,79 +1,120 @@
-# Pneumococcal Serotyping Analysis
-Tools and workflows for embedding, classifying, and detecting novel pneumococcal capsular biosynthetic loci (CBLs).
+# ALLCAPS — pneumococcal *cps* locus embedding, serotyping and novel-serotype detection
 
-## Quick Start
-- Install dependencies (Python ≥3.8, PyTorch, BioPython, transformers, pandas, numpy, scikit-learn, tqdm, snakemake).
-- Copy and edit the config template: `cp src/config.yaml.template config.yaml`.
-- Run a dry-run to verify the DAG: `snakemake -n --configfile config.yaml`.
-- Execute the workflow: `snakemake --cores 4 --configfile config.yaml`.
+Tools and workflows to **embed, classify, and detect novel pneumococcal capsular biosynthetic
+loci (CBLs)** from genome assemblies. Given a locus, the model predicts
 
-## Environment Setup (recommended)
+1. whether it is a *cps* locus at all,
+2. its serotype (and genogroup), and
+3. whether that serotype is **novel** — unseen during training.
+
+## How it works
+
+A *cps* locus is extracted from an assembly using the flanking `dexB`/`aliA` genes, split into
+4 kbp chunks with 50% overlap, and embedded with **ProkBERT**. Those chunk embeddings pass
+through a learned `TransformerEncoder` (with positional embeddings), are masked-mean-pooled into
+a single 128-d L2-normalised locus embedding, and feed **three classification heads**: capsule
+y/n, serotype, and genogroup. The model class is `TransformerTriHeadLR`
+([src/scripts/models.py](src/scripts/models.py)).
+
+**Novel-serotype detection** compares the pooled embedding to every training *cps* embedding by
+**cosine distance**. A locus is called novel when the distance to its nearest training neighbour
+exceeds a threshold set at the **95th percentile of the training leave-one-out 1-NN distances**
+— a threshold derived without ever looking at novel data. The report also names the closest
+known serotype, so a novel locus can be placed in a neighbourhood rather than just rejected.
+
+An **energy** score (`E = −T·logsumexp(logits/T)`) is retained as a reference baseline and
+reported alongside. Evaluated over 98 leave-one-serotype-out folds, kNN was the better detector
+on every fold-level metric, so it is the deployed one.
+
+> Distances are computed in **float64**. In float32, sklearn's cosine (`1 − x·y`) cancels below
+> machine epsilon for the many near-identical loci in this dataset, quantising ~73% of
+> in-distribution distances toward zero.
+
+## Install
+
 ```bash
-conda create -n pneumo python=3.10 -y
-conda activate pneumo
+conda create -n pneumo python=3.10 -y && conda activate pneumo
 pip install -r requirements.txt
-# or install snakemake if not in requirements
-pip install snakemake
+pip install snakemake            # not in requirements.txt
 ```
 
-## Configure Your Run
-Edit `config.yaml` (from `src/config.yaml.template`). Key fields to set:
-- `results_dir`: where outputs go.
-- `data_dir`: folder for cleaned contigs and intermediate files.
-- `metadata`: path to your metadata TSV/CSV.
-- `infiles`: text file listing raw FASTA paths to process.
-- `locus_cutter_query`: FASTA with flanking genes for locus cutting.
-- `label_column`: column in metadata with serotype labels (default `ERR` placeholder, change to your column).
-- `skip_labels`: list of labels to exclude (optional).
-- `serotypes`: list used for LOO runs (empty if not running LOO).
-- `base_model`, `chunk_size`, `stride_ratio`, `seq_max_len`: embedding settings.
-- `model_params`: JSON string for model hyperparams (layers, heads, temperature, etc.).
-- `energy_thresholds_json` / `id_energies_csv`: optional inputs for novelty thresholds when running query mode.
+## Run the pipeline
 
-> Placeholder: provide your own paths for `metadata`, `infiles`, `locus_cutter_query`, and `query_path`. Leave empty or comment fields you do not use.
-
-## Data Preparation
-1) Create/collect raw assemblies. List them in `infiles` (one FASTA path per line).
-2) Provide `metadata` with at least: sample ID, contig ID, serotype label (matching `label_column`), and capsule flag (`Is_capsule`).
-3) Provide flanking gene FASTA for locus cutting (`locus_cutter_query`).
-
-## Running the Pipeline
-Common targets (see `src/Snakefile`):
-- `locus_cutting`: cut loci and clean contigs.
-- `infer_chunks_cbl` / `infer_chunks_noncbl`: embed CBL and non-CBL contigs.
-- `labels_preprocessing` / `labels_postprocessing`: clean labels and assemble metadata.
-- `train_model`: train transformer LR head (optionally hierarchical loss).
-- `embed_chunks`: run inference to save embeddings/outputs.
-- `visualize_embeddings`, `capsule_classification`, `serotype_classification`: evaluation and plots.
-- `novel_detection`: query-time novelty detection (uses energy thresholds inputs if provided).
-- LOO variants: `train_model_loo`, `embed_chunks_loo`, `serotype_classification_loo` when `serotypes` is populated.
-
-Run everything via `rule all`:
 ```bash
-snakemake --cores 4 --configfile config.yaml
+cp src/config.yaml.template config.yaml   # then edit the paths
+cd src                                    # the Snakefile resolves scripts relative to itself
+snakemake -n  --configfile ../config.yaml # dry-run the DAG first
+snakemake --cores 4 --configfile ../config.yaml
 ```
 
-## Re-train on Your Own Data
-1) Update `config.yaml` with your metadata, `label_column`, and embedding settings.
-2) Place raw FASTAs and flanking genes, update `infiles` and `locus_cutter_query` accordingly.
-3) (Optional) Adjust `model_params` JSON (e.g., `{"embedding_dim": 384, "num_layers": 2, "nhead": 4, "temperature": 0.07, "weight_fine": 1, "weight_coarse": 0.5}`).
-4) Run `snakemake --cores <n> --configfile config.yaml` to rebuild embeddings and re-train.
+`config.yaml` and `data/` are gitignored.
 
-## Novel Detection / Query Mode
-- Provide `query_path` in `config.yaml`.
-- Supply either `energy_thresholds_json` or `id_energies_csv` to set novelty thresholds.
-- Execute `snakemake --cores 1 --configfile config.yaml --targets query_results.csv` (or run `scripts/novel_detection.py` directly with matching args).
+### Configuration
+
+| Key | Meaning |
+|---|---|
+| `results_dir`, `data_dir` | Output and intermediate locations |
+| `infiles` | Text file listing one raw assembly FASTA path per line |
+| `metadata` | Sample metadata; needs a sample id, contig id, serotype and `Is_capsule` |
+| `locus_cutter_query` | FASTA of the flanking genes used to cut the locus |
+| `query_path` | Sequences to serotype / screen for novelty |
+| `serotypes` | Serotypes to hold out for LOO; leave empty to skip those rules |
+| `knn_k`, `knn_threshold_percentile`, `knn_max_k` | Novelty detector; defaults `1`, `95.0`, `5` |
+| `model_params` | JSON of model hyperparameters (must include `embedding_dim`) |
+
+## Pipeline rules
+
+`locus_cutting` → `labels_preprocessing` → `train_test_split` → `embed_base` →
+`labels_postprocessing` → `train_model` → `embed_chunks` → evaluation
+(`visualize_embeddings`, `capsule_classification`, `serotype_classification`) →
+`novel_detection` → `knn_fit` → `knn_predict_id` / `knn_predict_query`.
+
+`train_model_loo`, `embed_chunks_loo` and `serotype_classification_loo` repeat training and
+evaluation with one serotype withheld, and only materialise when `serotypes` is populated.
+See [src/README.md](src/README.md) for the rule-by-rule breakdown.
+
+## Outputs
+
+| File | Contents |
+|---|---|
+| `query_results.csv` | Per-locus serotype and genogroup calls, confidence, and the **energy** novelty flag (`is_novel_energy`) |
+| `knn_query_distances.csv` | The **deployed** novelty call: `is_novel_knn`, distance, and the nearest known serotype |
+| `knn_query_distances_topk.csv` | Long-format top-K neighbours per locus (`rank`, neighbour id, serotype, genogroup, distance) |
+| `knn_id_distances.csv` | The same scores on training data — every serotype is in-distribution here, so the flagged fraction is the false-positive rate |
+| `classification_report.txt`, `confusion_matrix_df.csv` | Closed-set serotype performance |
+
+## Data model
+
+Every metadata row and FASTA record is one **contig**, keyed `Public_ID#Contig_ID`
+(non-capsular records keep a `NONCBL#` prefix on `Public_ID`). One **sample** is one assembly
+and may span several contigs — a *cps* locus is frequently split across two. Metrics in this
+repo are computed per contig unless stated otherwise.
+
+The train/test split
+([src/scripts/helpers/data_train_test_split.py](src/scripts/helpers/data_train_test_split.py))
+groups **by sample, never by contig**, so sibling contigs of one assembly never straddle the
+boundary; a runtime assertion enforces it.
+
+## Repository layout
+
+- `src/Snakefile` — the workflow.
+- `src/scripts/` — core modules (models, embedding, inference, evaluation, kNN novelty).
+- `src/scripts/helpers/` — data preparation, the train/test splitter, novelty sweeps and plots.
+- `src/scripts/trihead/` — training, inference and query processing for the deployed model.
+- `src/scripts/tests/` — the round-trip sanity check comparing the training and query
+  embedding paths. Run it after any change to chunking, pooling or base-model loading.
+- `jobs/` — SLURM submission scripts for the cluster runs, with a dated log of what was run
+  and why in [jobs/README.md](jobs/README.md).
+
+Modules run as packages from `src/`, e.g. `python -m scripts.knn_ood predict ...`.
 
 ## Weights & Biases (optional)
-To log offline during Snakemake runs:
+
 ```bash
-export WANDB_MODE=offline
-```
-Later sync:
-```bash
-wandb sync --sync-all
+export WANDB_MODE=offline    # during the run
+wandb sync --sync-all        # afterwards
 ```
 
-## Contributing / Support
-- Issues and PRs are welcome.
-- Open an issue with environment details, command used, and any logs for troubleshooting.
+## Contributing
+
+Issues and PRs welcome — please include the command you ran, the environment, and any logs.
