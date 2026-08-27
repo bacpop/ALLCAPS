@@ -1,9 +1,12 @@
 """Aggregate leave-one-serotype-out (LOO) novel-detection performance across folds.
 
+Two detectors are compared: **kNN** (deployed) and **energy** (reference baseline).
+
 Per LOO subdirectory (one held-out serotype each), reads:
     serotype_energies.csv     — ID samples with `energy_serotype`        (stage 003)
-    openmax_predictions.csv   — ID samples with `prob_unknown`           (stage 004-2)
-    query_results.csv         — held-out (novel) samples with both       (stage 004q)
+    knn_id_distances.csv      — ID samples with `knn_distance`           (stage 004-4)
+    query_results.csv         — held-out (novel) samples, energy score   (stage 004q)
+    knn_query_distances.csv   — held-out (novel) samples, kNN distance   (stage 004q-knn)
     energy_summary.json       — calibrated energy thresholds             (stage 003)
 
 Computes per-fold AUROC / AUPR / FPR@95TPR / TPR@5FPR / detection-rate metrics
@@ -39,11 +42,11 @@ from ..utils import map_serotype_to_group
 logger = get_logger(__name__)
 
 ENERGY = "energy"
-OPENMAX = "openmax"
 KNN = "knn"
-MAHALANOBIS = "mahalanobis"
-REL_MAHALANOBIS = "relative_mahalanobis"
-METHODS = (ENERGY, OPENMAX, KNN, MAHALANOBIS, REL_MAHALANOBIS)
+# kNN is the deployed detector; energy is kept as the reference baseline that
+# justifies it. OpenMax and (relative-)Mahalanobis were evaluated over 98 LOO
+# folds, lost on every fold-level metric, and have been removed from the repo.
+METHODS = (ENERGY, KNN)
 
 AUROC_METRICS = ("auroc", "aupr", "fpr_at_95tpr", "tpr_at_target_fpr", "detection_rate_fitted")
 
@@ -58,55 +61,44 @@ class FoldData:
     genogroup: str
     id_energy: np.ndarray | None              # per-row ID energy (CBL only)
     id_energy_keys: pd.Series | None          # sample_ids aligned with id_energy
-    id_openmax: np.ndarray | None             # per-row ID prob_unknown (CBL only)
-    id_openmax_keys: pd.Series | None
     id_knn: np.ndarray | None                 # per-row ID kth-NN distance
     id_knn_keys: pd.Series | None
-    id_mahalanobis: np.ndarray | None         # per-row ID Mahalanobis (M_min)
-    id_mahalanobis_keys: pd.Series | None
-    id_rel_mahalanobis: np.ndarray | None     # per-row ID relative-Mahalanobis (RM)
-    id_rel_mahalanobis_keys: pd.Series | None
     novel_energy: np.ndarray                  # per-row novel energy
-    novel_openmax: np.ndarray | None          # per-row novel prob_unknown (may be all-NaN if missing)
     novel_knn: np.ndarray | None              # per-row novel kth-NN distance
-    novel_mahalanobis: np.ndarray | None      # per-row novel M_min
-    novel_rel_mahalanobis: np.ndarray | None  # per-row novel RM
     novel_is_novel_energy: np.ndarray         # binary flags from query_results
-    novel_is_novel_openmax: np.ndarray | None
     novel_is_novel_knn: np.ndarray | None
-    novel_is_novel_mahalanobis: np.ndarray | None
-    novel_is_novel_rel_mahalanobis: np.ndarray | None
     energy_threshold_fitted: float | None     # threshold from energy_summary.json at requested percentile
 
     def id_scores(self, method: str) -> np.ndarray | None:
-        return {
-            ENERGY: self.id_energy, OPENMAX: self.id_openmax, KNN: self.id_knn,
-            MAHALANOBIS: self.id_mahalanobis, REL_MAHALANOBIS: self.id_rel_mahalanobis,
-        }[method]
+        return {ENERGY: self.id_energy, KNN: self.id_knn}[method]
 
     def id_keys(self, method: str) -> pd.Series | None:
-        return {
-            ENERGY: self.id_energy_keys, OPENMAX: self.id_openmax_keys, KNN: self.id_knn_keys,
-            MAHALANOBIS: self.id_mahalanobis_keys, REL_MAHALANOBIS: self.id_rel_mahalanobis_keys,
-        }[method]
+        return {ENERGY: self.id_energy_keys, KNN: self.id_knn_keys}[method]
 
     def novel_scores(self, method: str) -> np.ndarray | None:
-        return {
-            ENERGY: self.novel_energy, OPENMAX: self.novel_openmax, KNN: self.novel_knn,
-            MAHALANOBIS: self.novel_mahalanobis, REL_MAHALANOBIS: self.novel_rel_mahalanobis,
-        }[method]
+        return {ENERGY: self.novel_energy, KNN: self.novel_knn}[method]
 
     def novel_flags(self, method: str) -> np.ndarray | None:
         return {
             ENERGY: self.novel_is_novel_energy,
-            OPENMAX: self.novel_is_novel_openmax,
             KNN: self.novel_is_novel_knn,
-            MAHALANOBIS: self.novel_is_novel_mahalanobis,
-            REL_MAHALANOBIS: self.novel_is_novel_rel_mahalanobis,
         }[method]
 
     def has_method(self, method: str) -> bool:
         return self.id_scores(method) is not None and self.novel_scores(method) is not None
+
+
+def _novel_flag_column(df: pd.DataFrame, path: Path) -> np.ndarray:
+    """Read the kNN novelty flag, accepting either column name.
+
+    `knn_ood.py` renamed `is_novel` to `is_novel_knn` so that energy and kNN
+    flags are unambiguous once they live in different files. Folds scored before
+    that rename still carry the old name, so accept both rather than forcing a
+    re-run of every fold."""
+    for col in ("is_novel_knn", "is_novel"):
+        if col in df.columns:
+            return df[col].to_numpy(dtype=bool)
+    raise KeyError(f"{path} has neither 'is_novel_knn' nor 'is_novel'")
 
 
 def _restore_serotype(safe_name: str) -> str:
@@ -133,13 +125,6 @@ def _load_fold(fold_dir: Path, energy_percentile: float) -> FoldData | None:
     novel_energy = query_df["novelty_confidence"].to_numpy(dtype=float)
     novel_is_novel_energy = query_df["is_novel_energy"].to_numpy(dtype=bool)
 
-    if "openmax_prob_unknown" in query_df.columns:
-        novel_openmax = query_df["openmax_prob_unknown"].to_numpy(dtype=float)
-        novel_is_novel_openmax = query_df["is_novel_openmax"].to_numpy(dtype=bool)
-    else:
-        novel_openmax = None
-        novel_is_novel_openmax = None
-
     # KNN novel scores (separate CSV, since process_trihead_query.py doesn't emit them)
     knn_query_path = fold_dir / "knn_query_distances.csv"
     if knn_query_path.exists():
@@ -148,26 +133,10 @@ def _load_fold(fold_dir: Path, energy_percentile: float) -> FoldData | None:
         if "sample_id" in knn_query_df.columns and len(knn_query_df) == len(query_df):
             knn_query_df = knn_query_df.set_index("sample_id").reindex(query_df.index)
         novel_knn = knn_query_df["knn_distance"].to_numpy(dtype=float)
-        novel_is_novel_knn = knn_query_df["is_novel"].to_numpy(dtype=bool)
+        novel_is_novel_knn = _novel_flag_column(knn_query_df, knn_query_path)
     else:
         novel_knn = None
         novel_is_novel_knn = None
-
-    # Mahalanobis novel scores (separate CSV per variant)
-    def _load_query_score_csv(path: Path, score_col: str) -> tuple[np.ndarray | None, np.ndarray | None]:
-        if not path.exists():
-            return None, None
-        df = pd.read_csv(path)
-        if "sample_id" in df.columns and len(df) == len(query_df):
-            df = df.set_index("sample_id").reindex(query_df.index)
-        return df[score_col].to_numpy(dtype=float), df["is_novel"].to_numpy(dtype=bool)
-
-    novel_mahalanobis, novel_is_novel_mahalanobis = _load_query_score_csv(
-        fold_dir / "mahalanobis_query_distances.csv", "mahalanobis_dist"
-    )
-    novel_rel_mahalanobis, novel_is_novel_rel_mahalanobis = _load_query_score_csv(
-        fold_dir / "relative_mahalanobis_query_distances.csv", "relative_mahalanobis_dist"
-    )
 
     # Required: ID energies
     energy_id_path = fold_dir / "serotype_energies.csv"
@@ -178,22 +147,6 @@ def _load_fold(fold_dir: Path, energy_percentile: float) -> FoldData | None:
     energy_id_df = energy_id_df[energy_id_df["Is_capsule"].astype(bool)]
     id_energy = energy_id_df["energy_serotype"].to_numpy(dtype=float)
     id_energy_keys = energy_id_df["sample_id"].astype(str).reset_index(drop=True)
-
-    # Optional: ID openmax (added by stage 004-2 of loo_array.sh)
-    openmax_id_path = fold_dir / "openmax_predictions.csv"
-    if openmax_id_path.exists():
-        openmax_id_df = pd.read_csv(openmax_id_path)
-        openmax_id_df = openmax_id_df[openmax_id_df["is_capsule"].astype(bool)]
-        id_openmax = openmax_id_df["prob_unknown"].to_numpy(dtype=float)
-        id_openmax_keys = openmax_id_df["sample_id"].astype(str).reset_index(drop=True)
-    else:
-        logger.warning(
-            "Fold %s: missing openmax_predictions.csv — OpenMax AUROC will be NaN. "
-            "Add stage 004-2 (RUN_OPENMAX_PREDICT) to loo_array.sh.",
-            fold_name,
-        )
-        id_openmax = None
-        id_openmax_keys = None
 
     # Optional: ID KNN (added by stage 004-4 of loo_array.sh)
     knn_id_path = fold_dir / "knn_id_distances.csv"
@@ -210,30 +163,6 @@ def _load_fold(fold_dir: Path, energy_percentile: float) -> FoldData | None:
         )
         id_knn = None
         id_knn_keys = None
-
-    # Optional: ID Mahalanobis variants (added by stage 004-6 of loo_array.sh)
-    def _load_id_score_csv(path: Path, score_col: str, warn_stage: str
-                           ) -> tuple[np.ndarray | None, pd.Series | None]:
-        if not path.exists():
-            logger.warning(
-                "Fold %s: missing %s — corresponding AUROC will be NaN. "
-                "Enable %s in loo_array.sh.",
-                fold_name, path.name, warn_stage,
-            )
-            return None, None
-        df = pd.read_csv(path)
-        df = df[df["Is_capsule"].astype(bool)]
-        return (df[score_col].to_numpy(dtype=float),
-                df["sample_id"].astype(str).reset_index(drop=True))
-
-    id_mahalanobis, id_mahalanobis_keys = _load_id_score_csv(
-        fold_dir / "mahalanobis_id_distances.csv", "mahalanobis_dist",
-        "stage 004-6 (RUN_MAHALANOBIS_PREDICT_ID)",
-    )
-    id_rel_mahalanobis, id_rel_mahalanobis_keys = _load_id_score_csv(
-        fold_dir / "relative_mahalanobis_id_distances.csv", "relative_mahalanobis_dist",
-        "stage 004-6 (RUN_MAHALANOBIS_PREDICT_ID)",
-    )
 
     # Energy threshold from summary
     energy_threshold_fitted: float | None = None
@@ -259,24 +188,12 @@ def _load_fold(fold_dir: Path, energy_percentile: float) -> FoldData | None:
         genogroup=genogroup,
         id_energy=id_energy,
         id_energy_keys=id_energy_keys,
-        id_openmax=id_openmax,
-        id_openmax_keys=id_openmax_keys,
         id_knn=id_knn,
         id_knn_keys=id_knn_keys,
-        id_mahalanobis=id_mahalanobis,
-        id_mahalanobis_keys=id_mahalanobis_keys,
-        id_rel_mahalanobis=id_rel_mahalanobis,
-        id_rel_mahalanobis_keys=id_rel_mahalanobis_keys,
         novel_energy=novel_energy,
-        novel_openmax=novel_openmax,
         novel_knn=novel_knn,
-        novel_mahalanobis=novel_mahalanobis,
-        novel_rel_mahalanobis=novel_rel_mahalanobis,
         novel_is_novel_energy=novel_is_novel_energy,
-        novel_is_novel_openmax=novel_is_novel_openmax,
         novel_is_novel_knn=novel_is_novel_knn,
-        novel_is_novel_mahalanobis=novel_is_novel_mahalanobis,
-        novel_is_novel_rel_mahalanobis=novel_is_novel_rel_mahalanobis,
         energy_threshold_fitted=energy_threshold_fitted,
     )
 
@@ -434,13 +351,6 @@ def _or_ensemble_auroc(fold: FoldData, m_a: str, m_b: str) -> tuple[float | None
     return ens_auroc, float(ens_auroc - max(a_auroc, b_auroc))
 
 
-def _saturation_diagnostic(scores: np.ndarray | None, threshold: float = 0.99) -> float:
-    """Fraction of scores above `threshold`. Designed for normalized-prob methods like OpenMax."""
-    if scores is None:
-        return float("nan")
-    return float((scores > threshold).mean())
-
-
 def _method_agreement(fold: FoldData) -> list[dict]:
     """Pairwise method-agreement metrics. One row per (method_a, method_b) pair
     where both methods have data for this fold. Computed on the novel set
@@ -522,7 +432,7 @@ def _per_fold_method_metrics(fold: FoldData, bootstrap_n: int, fpr_target: float
                 )
                 row["fitted_threshold"] = fold.energy_threshold_fitted
             else:
-                # OpenMax/KNN: use the binary flag from the predict step.
+                # KNN: use the binary flag from the predict step.
                 flags = fold.novel_flags(method)
                 row["detection_rate_fitted"] = float(flags.mean()) if flags is not None else float("nan")
                 row["fitted_threshold"] = float("nan")
@@ -778,20 +688,6 @@ def _build_report(
                 f"at the fold level.\n"
             )
 
-    # ── OpenMax saturation diagnostic (visible flag for the saturation pathology)
-    saturation = ""
-    om_sat = per_fold[per_fold["method"] == OPENMAX]["novel_score_p05"].dropna()
-    if len(om_sat) > 0:
-        n_saturated = int((om_sat > 0.99).sum())
-        if n_saturated > 0:
-            saturation = (
-                f"## OpenMax saturation diagnostic\n\n"
-                f"- In {n_saturated}/{len(om_sat)} folds, OpenMax's novel-set p05 of "
-                f"`prob_unknown` exceeds **0.99** — i.e. ≥95% of novel samples score >0.99. "
-                f"Inside that saturated band the ordering is noise, and the AUROC is propped "
-                f"up by the ID side. AUPR is the honest metric for those folds.\n\n"
-            )
-
     # ── Pairwise redundancy/complementarity verdicts
     verdict = "## Pairwise redundancy / complementarity\n\n"
     if len(agreement) == 0:
@@ -813,8 +709,8 @@ def _build_report(
             })
         verdict += _df_to_md_table(pd.DataFrame(rows)) + "\n"
 
-        # Per-pair verdict (use rho_novel, not max with ID — ID being correlated
-        # is largely a regression-to-the-saturated-mean artefact for OpenMax)
+        # Per-pair verdict uses rho on the novel set rather than on ID, where a
+        # shared bulk of near-duplicate loci inflates the correlation.
         for r in rows:
             pair = r["pair"]
             rho = r["rho_novel_med"]
@@ -827,15 +723,15 @@ def _build_report(
                         f"(ΔAUROC {_fmt_signed(delta)}); keep both, prefer the OR-ensemble.")
             elif delta < -0.005:
                 line = (f"  - **{pair}**: OR-ensemble HURTS "
-                        f"(ΔAUROC {_fmt_signed(delta)}); likely score-scale mismatch "
-                        f"(e.g. one method saturates). Use the better single method.")
+                        f"(ΔAUROC {_fmt_signed(delta)}); likely score-scale mismatch. "
+                        f"Use the better single method.")
             elif rho > 0.7 and abs(delta) < 0.01:
                 line = (f"  - **{pair}**: redundant (ρ {_fmt(rho)}, ΔAUROC {_fmt_signed(delta)}); "
                         f"either method captures the same signal.")
             elif rho < 0.0:
                 line = (f"  - **{pair}**: anti-correlated on novel (ρ {_fmt(rho)}, "
                         f"κ {_fmt(kappa)}) but no ensemble gain (ΔAUROC {_fmt_signed(delta)}) "
-                        f"— check for saturation in one of the methods.")
+                        f"— check the score scales.")
             else:
                 line = (f"  - **{pair}**: marginal complementarity (ρ {_fmt(rho)}, "
                         f"ΔAUROC {_fmt_signed(delta)}); keep the better single method as default.")
@@ -911,7 +807,6 @@ def _build_report(
         f"legacy energy percentile = {energy_percentile:.1f}%._\n\n"
         + headline + "\n"
         + confidence + "\n"
-        + saturation
         + verdict + "\n"
         + hardest
         + genogroup_section

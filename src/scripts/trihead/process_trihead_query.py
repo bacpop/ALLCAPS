@@ -11,6 +11,11 @@ Supports two inference modes:
 - ``scan``: Rolling window with mean-logit aggregation (for novel / full-genome
   queries).
 
+Novelty: this script reports the **energy** score only (`novelty_confidence` and
+`is_novel_energy`). The deployed detector is kNN, which is scored separately by
+``scripts.knn_ood predict`` against the ``query_embeddings.npz`` written here and
+reports ``is_novel_knn`` in its own CSV.
+
 Usage::
 
     python -m scripts.trihead.process_trihead_query \\
@@ -18,7 +23,7 @@ Usage::
         --model_path results/transformer_model.pth \\
         --output_dir results/ \\
         --inference_mode eval \\
-        --openmax_params results/openmax_params.pkl
+        --energy_summary results/energy_summary.json
 """
 
 import argparse
@@ -42,7 +47,6 @@ from ..inference import (
     softmax_predict,
 )
 from ..logging_config import get_logger
-from ..openmax import OpenMax
 
 logger = get_logger(__name__)
 
@@ -115,16 +119,6 @@ def main(args):
     idx_to_serotype = head_bundle.idx_to_serotype
     idx_to_genogroup = head_bundle.idx_to_genogroup
 
-    # Load OpenMax if provided
-    openmax_model: Optional[OpenMax] = None
-    if args.openmax_params:
-        if not os.path.isfile(args.openmax_params):
-            raise FileNotFoundError(
-                f"OpenMax parameters file not found: {args.openmax_params}"
-            )
-        logger.info("Loading OpenMax parameters from %s", args.openmax_params)
-        openmax_model = OpenMax.load(args.openmax_params)
-
     # ── Process each query sequence ───────────────────────────
     logger.info("Processing queries...")
     results: dict = {}
@@ -184,35 +178,20 @@ def main(args):
 
         _, sero_conf, _ = softmax_predict(sel_sero, idx_to_serotype)
 
-        # Energy novelty
+        # Energy novelty. The kNN detector — the deployed one — is scored
+        # separately by `scripts.knn_ood predict` against query_embeddings.npz,
+        # and reports `is_novel_knn` in its own CSV.
         e_sero = energy_score(sel_sero, temperature=resolved_temperature)
         is_novel_energy = bool(e_sero > tau_serotype)
-
-        # OpenMax novelty
-        openmax_pred = None
-        openmax_prob_unknown = None
-        is_novel_openmax = False
-        if openmax_model is not None:
-            om = openmax_model.openmax_score(sel_z, sel_sero)
-            openmax_pred = om["openmax_pred"]
-            openmax_prob_unknown = round(om["prob_unknown"], 6)
-            is_novel_openmax = om["is_novel"]
-
-        is_novel = is_novel_energy or is_novel_openmax
 
         entry: dict = {
             "serotype_logits": sel_sero,
             "embedding": sel_z,
             "is_cbl": is_cbl,
-            "is_novel_serogroup": is_novel,
             "is_novel_energy": is_novel_energy,
-            "is_novel_openmax": is_novel_openmax,
             "serotype_confidence": round(sero_conf, 3),
             "novelty_confidence": round(e_sero, 3),
         }
-        if openmax_pred is not None:
-            entry["openmax_pred"] = openmax_pred
-            entry["openmax_prob_unknown"] = openmax_prob_unknown
         if sel_geno is not None and idx_to_genogroup is not None:
             geno_label, _, _ = softmax_predict(sel_geno, idx_to_genogroup)
             entry["genogroup_logits"] = sel_geno
@@ -285,12 +264,6 @@ def parse_args():
         default="eval",
         choices=["eval", "scan"],
         help="'eval' matches training; 'scan' uses rolling window.",
-    )
-    p.add_argument(
-        "--openmax_params",
-        type=str,
-        default=None,
-        help="Path to fitted OpenMax .pkl for open-set recognition.",
     )
     p.add_argument(
         "--energy_summary",

@@ -4,13 +4,19 @@
 OOD score = distance from the sample's feature vector to the k-th nearest
 neighbor among the training (in-distribution) feature vectors. Larger distance
 ⇒ farther from anything we've seen ⇒ more novel. Non-parametric, model-agnostic,
-and — unlike energy and OpenMax — derived from feature-space density rather
-than from the closed-set classifier's logits / MAVs, so it taps a different
-signal from the methods already deployed.
+and — unlike the energy score — derived from feature-space density rather than
+from the closed-set classifier's logits, so it taps a different signal. This is
+the deployed detector; energy is retained only as a reference baseline.
 
 The predict step also emits, for every sample, its single closest ID neighbour
 (the k=1 report): ``nn_distance`` (how far to that neighbour), ``nn_serotype``
 (which trained serotype it landed next to) and ``nn_genogroup``.
+
+Pass ``--max_k K`` to additionally write a long-format neighbour table
+(``<output>_topk.csv``), one row per (sample, rank), carrying the neighbour's
+index key, serotype, genogroup and distance. Useful when the top hit lands on a
+serotype with too few calibration genomes to threshold reliably and you want the
+runner-up. The main ``--output`` CSV is unaffected by this flag.
 
 Usage:
   # Fit (build index from ID training embeddings):
@@ -120,26 +126,50 @@ class KnnOOD:
         dists, _ = self.index.kneighbors(X, n_neighbors=n_search, return_distance=True)
         return dists[:, -1].astype(np.float64)
 
-    def nearest(self, X: np.ndarray, query_is_id: bool = False) -> tuple[np.ndarray, np.ndarray]:
-        """k=1 nearest-neighbour report: distance to the single closest training
-        vector and that neighbour's serotype.
+    def nearest(
+        self, X: np.ndarray, query_is_id: bool = False, n_neighbours: int = 1
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Nearest-neighbour report: for each row, the ``n_neighbours`` closest
+        training vectors — their distances, serotypes and index keys.
 
-        Returns ``(distances, serotypes)``. If ``query_is_id`` the index was
-        built from these same vectors, so we ask for 2 neighbours and skip the
-        zero-distance self-match at column 0. When no serotype labels were
-        stored at fit time the serotype array is filled with ``None``."""
+        Returns ``(distances, serotypes, keys)``, each shaped
+        ``(len(X), n_neighbours)`` and ordered nearest-first. If ``query_is_id``
+        the index was built from these same vectors, so we ask for one extra
+        neighbour and drop the zero-distance self-match at column 0. When no
+        serotype labels were stored at fit time the serotype array is filled
+        with ``None``.
+
+        ``n_neighbours=1`` reproduces the deployed k=1 report. ``query_is_id``
+        assumes ``X`` is the same matrix, in the same row order, that the index
+        was fitted on — which is how ``cli_predict`` builds it."""
         assert self.index is not None, "Call fit() first."
+        assert n_neighbours >= 1, "n_neighbours must be >= 1"
         X = _as_f64(X)
-        n_search = min(2 if query_is_id else 1, len(self.train_keys))
+        # +1 when querying the index with its own vectors, so that after dropping
+        # the self-match we still have n_neighbours genuine neighbours.
+        n_search = min(n_neighbours + 1 if query_is_id else n_neighbours, len(self.train_keys))
         dists, idxs = self.index.kneighbors(X, n_neighbors=n_search, return_distance=True)
-        col = 1 if query_is_id else 0
-        nn_dist = dists[:, col].astype(np.float64)
-        nn_idx = idxs[:, col]
-        if self.train_serotypes is not None:
-            nn_sero = self.train_serotypes[nn_idx]
+        if query_is_id:
+            # Exact-duplicate loci are common, so a whole block of neighbours can
+            # sit at distance 0 and the self-match is NOT reliably at column 0 —
+            # sklearn's ordering among ties is arbitrary. Drop it by row identity,
+            # not by position. A stable argsort keeps the remaining neighbours in
+            # distance order; rows where the self-match never surfaced simply lose
+            # their farthest column, so every row still yields n_neighbours.
+            drop = idxs == np.arange(len(X))[:, None]
+            order = np.argsort(drop, axis=1, kind="stable")[:, :n_neighbours]
+            dists = np.take_along_axis(dists, order, axis=1)
+            idxs = np.take_along_axis(idxs, order, axis=1)
         else:
-            nn_sero = np.array([None] * len(nn_idx), dtype=object)
-        return nn_dist, nn_sero
+            dists, idxs = dists[:, :n_neighbours], idxs[:, :n_neighbours]
+
+        nn_dist = dists.astype(np.float64)
+        nn_keys = np.asarray(self.train_keys)[idxs]
+        if self.train_serotypes is not None:
+            nn_sero = np.asarray(self.train_serotypes)[idxs]
+        else:
+            nn_sero = np.full(idxs.shape, None, dtype=object)
+        return nn_dist, nn_sero, nn_keys
 
     def save(self, path: str) -> None:
         assert self.index is not None, "Cannot save unfitted KnnOOD."
@@ -175,7 +205,7 @@ class KnnOOD:
 
 def _load_id_embeddings(npz_path: str, labels_path: str, sep: str = DEFAULT_SEP) -> tuple[np.ndarray, pd.DataFrame, np.ndarray]:
     """Load dict-style .npz (cbl|Public_ID#Contig_ID → 128-vec) joined with labels.
-    Returns (X, labels_df, keys) — same convention as openmax.cli_fit."""
+    Returns (X, labels_df, keys)."""
     X = np.load(npz_path, allow_pickle=True)
     labels_df = pd.read_csv(
         labels_path, index_col=0,
@@ -248,26 +278,69 @@ def cli_predict(args: argparse.Namespace) -> None:
         })
         query_is_id = False
 
-    # k=1 report: how far is each sample from its single closest ID neighbour,
-    # and what serotype / genogroup does that neighbour belong to?
-    nn_dist, nn_sero = knn.nearest(X, query_is_id=query_is_id)
-    out_df["nn_distance"] = nn_dist
-    out_df["nn_serotype"] = nn_sero
+    # Neighbour report. Column 0 is the deployed k=1 view: how far is each sample
+    # from its single closest ID neighbour, and what serotype / genogroup does
+    # that neighbour belong to? Ranks 2..max_k go to the separate top-k CSV.
+    max_k = max(1, int(args.max_k))
+    nn_dist, nn_sero, nn_keys = knn.nearest(X, query_is_id=query_is_id, n_neighbours=max_k)
+    out_df["nn_distance"] = nn_dist[:, 0]
+    out_df["nn_serotype"] = nn_sero[:, 0]
     out_df["nn_genogroup"] = [
-        map_serotype_to_group(str(s)) if s is not None else None for s in nn_sero
+        map_serotype_to_group(str(s)) if s is not None else None for s in nn_sero[:, 0]
     ]
 
     # Mark "novel" using the percentile-of-ID convention used elsewhere in the
     # pipeline (matches the energy threshold approach in energy_summary.json).
     threshold = float(np.percentile(knn.train_loo_distances, args.threshold_percentile))
-    out_df["is_novel"] = out_df["knn_distance"] > threshold
+    out_df["is_novel_knn"] = out_df["knn_distance"] > threshold
     out_df.to_csv(args.output, index=False)
     logger.info(
         "Wrote %d KNN scores to %s (threshold=%.4f at p%g of train LOO distances; "
         "fraction flagged novel=%.3f)",
         len(out_df), args.output, threshold, args.threshold_percentile,
-        float(out_df["is_novel"].mean()),
+        float(out_df["is_novel_knn"].mean()),
     )
+
+    if max_k > 1:
+        _write_topk_csv(out_df["sample_id"].to_numpy(), nn_dist, nn_sero, nn_keys,
+                        _topk_path(args))
+
+
+def _topk_path(args: argparse.Namespace) -> str:
+    """Explicit --topk_output, else `<output stem>_topk.csv` beside the main CSV."""
+    if getattr(args, "topk_output", None):
+        return args.topk_output
+    stem, _, ext = args.output.rpartition(".")
+    return f"{stem}_topk.{ext}" if stem else f"{args.output}_topk.csv"
+
+
+def _write_topk_csv(
+    sample_ids: np.ndarray,
+    nn_dist: np.ndarray,
+    nn_sero: np.ndarray,
+    nn_keys: np.ndarray,
+    path: str,
+) -> None:
+    """Long/tidy neighbour table: one row per (sample, rank), nearest first.
+
+    Kept separate from the deployed output so that file's shape never changes.
+    ``nn_sample_id`` is the index key of the training locus, so a hit can be
+    traced back to the genome it matched."""
+    n_rows, k = nn_dist.shape
+    topk = pd.DataFrame({
+        "sample_id": np.repeat(sample_ids, k),
+        "rank": np.tile(np.arange(1, k + 1), n_rows),
+        "nn_sample_id": nn_keys.reshape(-1),
+        "nn_serotype": nn_sero.reshape(-1),
+        "nn_distance": nn_dist.reshape(-1),
+    })
+    topk["nn_genogroup"] = [
+        map_serotype_to_group(str(s)) if s is not None else None for s in topk["nn_serotype"]
+    ]
+    topk = topk[["sample_id", "rank", "nn_sample_id", "nn_serotype",
+                 "nn_genogroup", "nn_distance"]]
+    topk.to_csv(path, index=False)
+    logger.info("Wrote top-%d neighbour report (%d rows) to %s", k, len(topk), path)
 
 
 # ──────────────────────────── CLI: parser ────────────────────────────
@@ -298,6 +371,12 @@ def main() -> None:
     p_pred.add_argument("--output", required=True, help="Output CSV path")
     p_pred.add_argument("--threshold_percentile", type=float, default=99.0,
                         help="Percentile of training k-th-NN distances used as the novelty threshold")
+    p_pred.add_argument("--max_k", type=int, default=1,
+                        help="Report this many nearest neighbours. >1 writes an extra "
+                             "long-format CSV (one row per sample x rank); the main "
+                             "--output CSV is unchanged either way (default: 1)")
+    p_pred.add_argument("--topk_output", default=None,
+                        help="Path for the --max_k report (default: '<output>_topk.csv')")
     p_pred.add_argument("--sep", default=DEFAULT_SEP)
 
     args = parser.parse_args()

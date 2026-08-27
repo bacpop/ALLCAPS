@@ -2,8 +2,8 @@
 
 This module centralises model-loading, sequence-embedding, scoring, and
 data I/O functions that were previously duplicated across
-process_trihead_query.py, eval_serotype_classifier.py,
-eval_cbl_classifier.py, novel_detection.py, openmax.py, etc.
+process_trihead_query.py, eval_serotype_classifier.py and
+eval_cbl_classifier.py.
 
 Typical usage
 -------------
