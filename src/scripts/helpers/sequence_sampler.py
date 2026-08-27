@@ -80,11 +80,19 @@ def main(args):
     id_column = args.id_column
 
     logger.info("Loading data...")
+    # Deduplicate BEFORE indexing. `set_index(...).drop_duplicates()` compares only
+    # the remaining columns and ignores the index, so any two samples sharing
+    # (Contig_ID, Serotype, Is_capsule) collapsed into one — which silently reduced
+    # each serotype to roughly its number of distinct Contig_ID values (serotype 8:
+    # 5,425 contig rows -> 74). Dropping duplicates while Public_ID is still a column
+    # removes only genuinely repeated rows.
     labels = (
         pd.read_csv(args.labels, sep="\t" if args.labels.endswith(".tsv") else ",")
-        .set_index(id_column)
         .drop_duplicates()
-    )  # TODO clean up labels
+        .set_index(id_column)
+    )
+    logger.info("Loaded %d label rows (%d distinct %s)",
+                len(labels), labels.index.nunique(), id_column)
     if args.embeddings:
         X = np.load(args.embeddings)  # shape (N, D)
         is_X_npz = isinstance(X, np.lib.npyio.NpzFile)
