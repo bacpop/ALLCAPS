@@ -1,3 +1,12 @@
+import sys, os
+
+# `workflow.basedir` is this Snakefile's directory. Do NOT use __file__ here — inside a
+# Snakefile it resolves to snakemake's own workflow.py, so the append silently pointed at
+# the snakemake install and `from consts import *` failed with ModuleNotFoundError.
+sys.path.append(os.path.join(workflow.basedir, "scripts"))
+
+from consts import *
+
 configfile: "config.yaml"
 RESULTS_DIR = config["results_dir"]
 
@@ -17,124 +26,146 @@ SEROTYPES = config["serotypes"]
 
 rule all:
     input:
-        # Embedding directories
-        f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
-        f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+        # Data preprocessing outputs
+        f"{config['data_dir']}/train.fasta",
+        f"{config['data_dir']}/test.fasta",
+        # Labels processing outputs
+        f"{RESULTS_DIR}/cleaned_labels.csv",
+        f"{config['data_dir']}/final_metadata.csv",
+        # Embedding directory (flat)
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked"),
         # Model and processing outputs
-        f"{RESULTS_DIR}/final_metadata.tsv",
         f"{RESULTS_DIR}/transformer_model.pth",
         f"{RESULTS_DIR}/inference_results.npz",
         # Visualization and analysis outputs
-        f"{RESULTS_DIR}/tsne_visualization.pdf",
         f"{RESULTS_DIR}/cbl_results.txt",
         f"{RESULTS_DIR}/serotype_predictions.txt",
         f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
         f"{RESULTS_DIR}/classification_report.txt",
         f"{RESULTS_DIR}/confusion_matrix_df.csv",
-        # Novel detection outputs
+        # Novel detection outputs — energy (query_results) + kNN (deployed detector)
         f"{RESULTS_DIR}/query_results.csv",
+        f"{RESULTS_DIR}/knn_id_distances.csv",
+        f"{RESULTS_DIR}/knn_query_distances.csv",
         # LOO targets (one set per held-out serotype)
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/classification_report.txt", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/confusion_matrix_df.csv", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt", heldout=SEROTYPES),
         expand(f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv", heldout=SEROTYPES)
 
-rule infer_chunks_cbl:
+rule locus_cutting:
+    """Cut CBL loci from raw FASTA files; produces CBL and non-CBL sequences."""
     input:
-        fasta=config["cbl_fasta"]  # TODO bring back locus cutter
-    output:
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked/cbl")
+        infiles=config["infiles"],
     params:
-        base_model=config["base_model"],
-        device=config["device"],
-        chunk_size=config["chunk_size"],
-        stride_ratio=config["stride_ratio"]
+        query=config["locus_cutter_query"],
+        outpref=f"{config['data_dir']}/contigs",
+        cutoff=config.get("locus_cutter_cutoff", 0.7),
+        max_extension=config.get("locus_cutter_max_extension", 1e9)
+    output:
+        f"{config['data_dir']}/contigs_cleaned.fasta",
+        f"{config['data_dir']}/contigs_noncbl_cleaned.fasta"
     shell:
         """
-        python scripts/embed_transformer.py \
+        python -m scripts.data_locus_cutter \
+            --infiles {input.infiles} \
+            --cutoff {params.cutoff} \
+            --query {params.query} \
+            --outpref {params.outpref} \
+            --max_extension {params.max_extension} \
+            --save-noncbl
+        """
+
+rule labels_preprocessing:
+    input:
+        config["metadata"]
+    output:
+        f"{RESULTS_DIR}/cleaned_labels.csv"
+    shell:
+        """
+        python -m scripts.data_labels_preprocessing \
+            --metadata {input} \
+            --output_dir {RESULTS_DIR}
+        """
+
+rule train_test_split:
+    """Combine multiple FASTA/metadata sources and stratified-split into train/test."""
+    input:
+        cbl=f"{config['data_dir']}/contigs_cleaned.fasta",
+        noncbl=f"{config['data_dir']}/contigs_noncbl_cleaned.fasta",
+        labels=f"{RESULTS_DIR}/cleaned_labels.csv"
+    params:
+        fastas=" ".join(config.get("split_fastas", [])),
+        metadata=" ".join(config.get("split_metadata", [])),
+        ratios=config.get("split_ratios", "0.9"),
+    output:
+        f"{config['data_dir']}/train.fasta",
+        f"{config['data_dir']}/test.fasta",
+        f"{config['data_dir']}/train_metadata.csv",
+        f"{config['data_dir']}/test_metadata.csv",
+    shell:
+        """
+        python -m scripts.helpers.data_train_test_split \
+            --fastas {params.fastas} \
+            --metadata {params.metadata} \
+            --ratios {params.ratios} \
+            --output_dir {config[data_dir]}
+        """
+
+rule embed_base:
+    """Compute ProKBERT chunk embeddings for all training sequences (flat output dir)."""
+    input:
+        fasta=f"{config['data_dir']}/train.fasta"
+    output:
+        directory(f"{RESULTS_DIR}/base_embeddings_chunked")
+    params:
+        base_model=config.get("base_model", "neuralbioinfo/prokbert-mini-long"),
+        device=config.get("device", "cuda"),
+        chunk_size=config.get("chunk_size", 4000),
+        stride_ratio=config.get("stride_ratio", 0.5),
+        seq_max_len=config.get("seq_max_len", 30_000)
+    shell:
+        """
+        python -m scripts.embed_transformer \
             --fasta {input.fasta} \
             --out_dir {output} \
+            --device {params.device} \
             --model_name {params.base_model} \
             --chunk_size {params.chunk_size} \
             --stride_ratio {params.stride_ratio} \
-            --device {params.device}
+            --seq_max_len {params.seq_max_len}
         """
-
-rule infer_chunks_noncbl:
-    input:
-        fasta=config["noncbl_fasta"]  # TODO bring back locus cutter
-    output:
-        directory(f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl")
-    params:
-        base_model=config["base_model"],
-        device=config["device"],
-        chunk_size=config["chunk_size"],
-        stride_ratio=config["stride_ratio"]
-    shell:
-        """
-        python scripts/embed_transformer.py \
-            --fasta {input.fasta} \
-            --out_dir {output} \
-            --model_name {params.base_model} \
-            --chunk_size {params.chunk_size} \
-            --stride_ratio {params.stride_ratio} \
-            --device {params.device}
-        """
-
-# rule generate_raw_labels:
-#     input:
-#         fasta=config["fasta"],
-#         metadata=config["metadata"]
-#     output:
-#         f"{RESULTS_DIR}/raw_labels.tsv"
-#     shell:
-#         """
-#         python scripts/data_generate_raw_labels.py \
-#             --fasta {input.fasta} \
-#             --metadata {input.metadata} \
-#             --output {output}
-#         """
-# 
-# rule labels_preprocessing:
-#     input:
-#         f"{RESULTS_DIR}/raw_labels.tsv"
-#     output:
-#         f"{RESULTS_DIR}/cleaned_labels.tsv"
-#     shell:
-#         """
-#         python scripts/data_labels_preprocessing.py \
-#             --raw_labels {input} \
-#             --output_dir {RESULTS_DIR}
-#         """
 
 rule labels_postprocessing:
+    """Filter metadata to only samples that have a matching embedding file."""
     input:
-        labels=config["labels"],  # TODO uncomment preprocessing
-        cbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/cbl",
-        noncbl_dir=f"{RESULTS_DIR}/base_embeddings_chunked/non-cbl",
+        labels=f"{config['data_dir']}/train_metadata.csv",
+        emb_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
     output:
-        f"{RESULTS_DIR}/final_metadata.tsv"
+        f"{config['data_dir']}/final_metadata.csv"
     shell:
         """
-        python scripts/data_labels_postprocessing.py \
+        python -m scripts.data_labels_postprocessing \
             --clean_labels {input.labels} \
-            --output_dir {RESULTS_DIR}
+            --embedding_dir {input.emb_dir} \
+            --output_dir {config[data_dir]}
         """
 
 rule train_model:
     input:
         embeddings=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         protected(f"{RESULTS_DIR}/transformer_model.pth")
     params:
         device=config["device"],
         epochs=config["epochs"],
         batch_size=config["batch_size"],
-        lr=config["lr"]
+        lr=config["lr"],
+        model_params=config["model_params"]
     shell:
         """
-        python scripts/train_transformer.py \
+        python -m scripts.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -142,7 +173,7 @@ rule train_model:
             --epochs {params.epochs} \
             --batch_size {params.batch_size} \
             --lr {params.lr} \
-            --model_params '{config[model_params]}' \
+            --model_params '{params.model_params}' \
             --labeled_only \
             --hierarchical_loss
         """
@@ -150,7 +181,7 @@ rule train_model:
 rule embed_chunks:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         model=f"{RESULTS_DIR}/transformer_model.pth"
     output:
         f"{RESULTS_DIR}/inference_results.npz"
@@ -160,8 +191,8 @@ rule embed_chunks:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/infer_transformer.py \
-            --embeddings_dir {input.embeddings} \
+        python -m scripts.trihead.infer_trihead_transformer \
+            --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
             --output {output} \
@@ -174,12 +205,12 @@ rule embed_chunks:
 rule visualize_embeddings:
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
     output:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
         """
-        python scripts/eval_visualize_embeddings.py \
+        python -m scripts.eval_visualize_embeddings \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
@@ -198,7 +229,7 @@ rule capsule_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/eval_cbl_classifier.py \
+        python -m scripts.eval_cbl_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --output {output} \
@@ -211,7 +242,7 @@ rule serotype_classification:
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
         model=f"{RESULTS_DIR}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/serotype_predictions.txt",
         f"{RESULTS_DIR}/serotype_confidence_stats.tsv",
@@ -223,7 +254,7 @@ rule serotype_classification:
         model_params=config["model_params"]
     shell:
         """
-        python scripts/eval_serotype_classifier.py \
+        python -m scripts.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -237,7 +268,7 @@ rule serotype_classification:
 rule train_model_loo:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
     params:
@@ -250,7 +281,7 @@ rule train_model_loo:
     # resources: gpu=1, mem_mb=32000  # optionally control resources
     shell:
         """
-        python scripts/train_transformer.py \
+        python -m scripts.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --output {output} \
@@ -261,13 +292,13 @@ rule train_model_loo:
             --model_params '{params.model_params}' \
             --labeled_only \
             --hierarchical_loss \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
 rule embed_chunks_loo:
     input:
         embeddings_dir=f"{RESULTS_DIR}/base_embeddings_chunked",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz"
@@ -279,7 +310,7 @@ rule embed_chunks_loo:
     # resources: gpu=1, mem_mb=16000
     shell:
         """
-        python scripts/infer_transformer.py \
+        python -m scripts.trihead.infer_trihead_transformer \
             --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
@@ -288,14 +319,14 @@ rule embed_chunks_loo:
             --batch_size {params.batch_size} \
             --model_params '{params.model_params}' \
             --labeled_only \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
 rule serotype_classification_loo:
     input:
         embeddings=f"{RESULTS_DIR}/loo/{{heldout}}/inference_results.npz",
         model=f"{RESULTS_DIR}/loo/{{heldout}}/transformer_model.pth",
-        labels=f"{RESULTS_DIR}/final_metadata.tsv"
+        labels=f"{config['data_dir']}/final_metadata.csv"
     output:
         f"{RESULTS_DIR}/loo/{{heldout}}/serotype_predictions.txt",
         f"{RESULTS_DIR}/loo/{{heldout}}/serotype_confidence_stats.tsv",
@@ -309,7 +340,7 @@ rule serotype_classification_loo:
     # resources: gpu=1, mem_mb=8000
     shell:
         """
-        python scripts/eval_serotype_classifier.py \
+        python -m scripts.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -317,33 +348,142 @@ rule serotype_classification_loo:
             --device {params.device} \
             --batch_size {params.batch_size} \
             --model_params '{params.model_params}' \
-            --skip_label {wildcards.heldout}
+            --skip_labels {wildcards.heldout}
         """
 
-rule sequence_sampler:
-    """Placeholder for future implementation. It will extract all the sequences from the query fasta from a specific serotype to use as query in novel detection script"""
-    pass
+# rule sequence_sampler:
+#     """Placeholder for future implementation. It will extract all the sequences from the query fasta from a specific serotype to use as query in novel detection script"""
+#     pass
 
 rule novel_detection:
     input:
-        labels=f"{RESULTS_DIR}/final_metadata.tsv",
+        labels=f"{config['data_dir']}/final_metadata.csv",
         trained_model=f"{RESULTS_DIR}/transformer_model.pth",
     params:
         query=config["query_path"],
         model_params=config["model_params"],
         base_model=config["base_model"],
-        head_model="transformer_lr_classifier",  # Hardcoded for now
-        # thresholds=config["novelty_thresholds"],
+        head_model="transformer_trihead_lr",
     output:
-        f"{RESULTS_DIR}/query_results.csv",
+        results=f"{RESULTS_DIR}/query_results.csv",
+        embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
     shell:
         """
-        python scripts/novel_detection.py \
+        python -m scripts.trihead.process_trihead_query \
             --query {params.query} \
-            --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
             --base_model {params.base_model} \
             --head_model {params.head_model} \
+            --model_path {input.trained_model} \
             --model_params '{params.model_params}' \
+            --inference_mode eval
         """
-            # --thresholds {params.thresholds} \
+
+
+# ═══════════════════════════════════════════════════════════════
+#  kNN novelty detection (the deployed detector)
+#
+#  Scores a query's cosine distance to the k-th nearest *training* cps embedding.
+#  `novel_detection` above reports the energy baseline; these rules add the kNN
+#  call. Defaults match the deployed configuration: k=1, threshold at the 95th
+#  percentile of the training leave-one-out k-th-NN distances.
+# ═══════════════════════════════════════════════════════════════
+
+KNN_K = config.get("knn_k", 1)
+KNN_PERCENTILE = config.get("knn_threshold_percentile", 95.0)
+KNN_MAX_K = config.get("knn_max_k", 5)
+# Comma-separated k values, e.g. "1,5,10,50,100,1000". Empty (the default) turns the
+# report off entirely — set it to sweep k without refitting: the index serves any k up
+# to its size regardless of `knn_k`, which only fixes the deployed score and threshold.
+KNN_K_GRID = str(config.get("knn_k_grid", "") or "").strip()
+KNN_K_GRID_FLAG = f"--k_grid {KNN_K_GRID}" if KNN_K_GRID else ""
+
+
+def knn_kgrid_output(distances_path: str) -> list:
+    """The `_kgrid.csv` knn_ood writes beside `distances_path`, or `[]` when the grid
+    is off — an empty output list keeps the rule valid without the file."""
+    return [distances_path.replace(".csv", "_kgrid.csv")] if KNN_K_GRID else []
+
+
+rule knn_fit:
+    """Build the nearest-neighbour index from the training (in-distribution) embeddings."""
+    input:
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        labels=f"{config['data_dir']}/final_metadata.csv",
+    output:
+        f"{RESULTS_DIR}/knn_index.pkl",
+    params:
+        k=KNN_K,
+    shell:
+        """
+        python -m scripts.knn_ood fit \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --output {output} \
+            --k {params.k} \
+            --distance_metric cosine
+        """
+
+
+rule knn_predict_id:
+    """Score the training set against its own index (self-match excluded).
+
+    Every serotype here is in-distribution, so the flagged fraction is the
+    false-positive rate at the chosen threshold — the honest calibration check.
+
+    With `knn_k_grid` set this also writes the ID side of a k sweep, which is what
+    makes the query-side grid interpretable: the threshold at each k comes from
+    these distances."""
+    input:
+        embeddings=f"{RESULTS_DIR}/inference_results.npz",
+        labels=f"{config['data_dir']}/final_metadata.csv",
+        knn_index=f"{RESULTS_DIR}/knn_index.pkl",
+    output:
+        distances=f"{RESULTS_DIR}/knn_id_distances.csv",
+        kgrid=knn_kgrid_output(f"{RESULTS_DIR}/knn_id_distances.csv"),
+    params:
+        percentile=KNN_PERCENTILE,
+        k_grid=KNN_K_GRID_FLAG,
+    shell:
+        """
+        python -m scripts.knn_ood predict \
+            --input_type id \
+            --embeddings {input.embeddings} \
+            --labels {input.labels} \
+            --knn_index {input.knn_index} \
+            --threshold_percentile {params.percentile} \
+            {params.k_grid} \
+            --output {output.distances}
+        """
+
+
+rule knn_predict_query:
+    """Score the query embeddings written by `novel_detection`.
+
+    `--max_k` additionally writes `<output>_topk.csv`, a long-format table of the
+    top-K neighbours per query (rank, neighbour id, serotype, genogroup, distance).
+    `knn_k_grid` writes `<output>_kgrid.csv`, the same table restricted to those k —
+    the distance at rank k is the OOD score at that k. Both are sliced out of the one
+    neighbour query, so the wider of the two sets the cost."""
+    input:
+        embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
+        knn_index=f"{RESULTS_DIR}/knn_index.pkl",
+    output:
+        distances=f"{RESULTS_DIR}/knn_query_distances.csv",
+        topk=f"{RESULTS_DIR}/knn_query_distances_topk.csv",
+        kgrid=knn_kgrid_output(f"{RESULTS_DIR}/knn_query_distances.csv"),
+    params:
+        percentile=KNN_PERCENTILE,
+        max_k=KNN_MAX_K,
+        k_grid=KNN_K_GRID_FLAG,
+    shell:
+        """
+        python -m scripts.knn_ood predict \
+            --input_type query \
+            --embeddings {input.embeddings} \
+            --knn_index {input.knn_index} \
+            --threshold_percentile {params.percentile} \
+            --max_k {params.max_k} \
+            {params.k_grid} \
+            --output {output.distances}
+        """

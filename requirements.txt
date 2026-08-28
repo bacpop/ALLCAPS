@@ -6,6 +6,7 @@ torch
 torchvision
 transformers
 scikit-learn
+scipy
 matplotlib
 seaborn
 wandb

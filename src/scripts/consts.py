@@ -3,8 +3,12 @@
 RND_STATE = 42
 
 # Data dependent constants
+TRAIN_SPLIT_RATIO = 0.9
+NON_TYPEABLE = "Non-typeable"
 DEFAULT_LABEL_COLUMN = "Serotype"
-DEFAULT_MISSING_LABEL = "Non-typeable"
+DEFAULT_ID_COLUMN = "Public_ID"
+DEFAULT_CONTIG_COLUMN = "Contig_ID"
+DEFAULT_MISSING_LABEL = NON_TYPEABLE
 CONTIG_SEP = "#"
 
 # 2D visualization
@@ -24,8 +28,13 @@ DEFAULT_COMPONENTS = 5
 DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
 DEFAULT_CV = 5  # Number of cross-validation folds
 
+# Label taxonomy
+MIN_SEROTYPE_COUNT = 5  # Min samples per serotype to keep as a resolved class
+SEROGROUP_LABELS = frozenset({"Serogroup 24", "Serogroup 33"})  # Serogroup-level labels
+
 # Inference
-DEFAULT_MODEL = "InstaDeepAI/nucleotide-transformer-2.5b-multi-species"
+DEFAULT_MODEL = "neuralbioinfo/prokbert-mini-long"
+DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
 DEFAULT_CHUNK_SIZE = 4000
 DEFAULT_STRIDE_RATIO = 0.5  # 50% overlap
 DEFAULT_MAX_LEN = (
