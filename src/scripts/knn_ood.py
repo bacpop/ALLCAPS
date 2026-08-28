@@ -368,9 +368,10 @@ def _neighbour_long_df(
         "nn_serotype": nn_sero[:, columns].reshape(-1),
         distance_column: nn_dist[:, columns].reshape(-1),
     })
-    df["nn_genogroup"] = [
-        map_serotype_to_group(str(s)) if s is not None else None for s in df["nn_serotype"]
-    ]
+    # Map over the ~100 distinct serotypes, not the (n_samples x n_ranks) rows —
+    # this table runs to ~500k rows for an ID sweep, where the per-row call dominates.
+    groups = {s: map_serotype_to_group(str(s)) for s in pd.unique(df["nn_serotype"].dropna())}
+    df["nn_genogroup"] = df["nn_serotype"].map(groups)
     return df[["sample_id", rank_column, "nn_sample_id", "nn_serotype",
                "nn_genogroup", distance_column]]
 

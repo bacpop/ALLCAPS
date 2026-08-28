@@ -26,5 +26,7 @@ sketch_size: 10000
 knn_k: 1                        # distance to the k-th nearest training locus
 knn_threshold_percentile: 95.0  # threshold = this percentile of training LOO k-th-NN distances
 knn_max_k: 5                    # also emit a top-K neighbour report per query
+knn_k_grid: ""                  # e.g. "1,5,10,20,50,100,200,500,1000" — per-sample k sweep
+                                # (<output>_kgrid.csv); "" = off. Needs no change to knn_k.
 lda_components: 5
 novelty_thresholds: "0.1,0.2,0.9,0.98"

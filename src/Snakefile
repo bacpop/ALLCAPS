@@ -392,6 +392,17 @@ rule novel_detection:
 KNN_K = config.get("knn_k", 1)
 KNN_PERCENTILE = config.get("knn_threshold_percentile", 95.0)
 KNN_MAX_K = config.get("knn_max_k", 5)
+# Comma-separated k values, e.g. "1,5,10,50,100,1000". Empty (the default) turns the
+# report off entirely — set it to sweep k without refitting: the index serves any k up
+# to its size regardless of `knn_k`, which only fixes the deployed score and threshold.
+KNN_K_GRID = str(config.get("knn_k_grid", "") or "").strip()
+KNN_K_GRID_FLAG = f"--k_grid {KNN_K_GRID}" if KNN_K_GRID else ""
+
+
+def knn_kgrid_output(distances_path: str) -> list:
+    """The `_kgrid.csv` knn_ood writes beside `distances_path`, or `[]` when the grid
+    is off — an empty output list keeps the rule valid without the file."""
+    return [distances_path.replace(".csv", "_kgrid.csv")] if KNN_K_GRID else []
 
 
 rule knn_fit:
@@ -418,15 +429,21 @@ rule knn_predict_id:
     """Score the training set against its own index (self-match excluded).
 
     Every serotype here is in-distribution, so the flagged fraction is the
-    false-positive rate at the chosen threshold — the honest calibration check."""
+    false-positive rate at the chosen threshold — the honest calibration check.
+
+    With `knn_k_grid` set this also writes the ID side of a k sweep, which is what
+    makes the query-side grid interpretable: the threshold at each k comes from
+    these distances."""
     input:
         embeddings=f"{RESULTS_DIR}/inference_results.npz",
         labels=f"{config['data_dir']}/final_metadata.csv",
         knn_index=f"{RESULTS_DIR}/knn_index.pkl",
     output:
-        f"{RESULTS_DIR}/knn_id_distances.csv",
+        distances=f"{RESULTS_DIR}/knn_id_distances.csv",
+        kgrid=knn_kgrid_output(f"{RESULTS_DIR}/knn_id_distances.csv"),
     params:
         percentile=KNN_PERCENTILE,
+        k_grid=KNN_K_GRID_FLAG,
     shell:
         """
         python -m scripts.knn_ood predict \
@@ -435,7 +452,8 @@ rule knn_predict_id:
             --labels {input.labels} \
             --knn_index {input.knn_index} \
             --threshold_percentile {params.percentile} \
-            --output {output}
+            {params.k_grid} \
+            --output {output.distances}
         """
 
 
@@ -443,16 +461,21 @@ rule knn_predict_query:
     """Score the query embeddings written by `novel_detection`.
 
     `--max_k` additionally writes `<output>_topk.csv`, a long-format table of the
-    top-K neighbours per query (rank, neighbour id, serotype, genogroup, distance)."""
+    top-K neighbours per query (rank, neighbour id, serotype, genogroup, distance).
+    `knn_k_grid` writes `<output>_kgrid.csv`, the same table restricted to those k —
+    the distance at rank k is the OOD score at that k. Both are sliced out of the one
+    neighbour query, so the wider of the two sets the cost."""
     input:
         embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
         knn_index=f"{RESULTS_DIR}/knn_index.pkl",
     output:
         distances=f"{RESULTS_DIR}/knn_query_distances.csv",
         topk=f"{RESULTS_DIR}/knn_query_distances_topk.csv",
+        kgrid=knn_kgrid_output(f"{RESULTS_DIR}/knn_query_distances.csv"),
     params:
         percentile=KNN_PERCENTILE,
         max_k=KNN_MAX_K,
+        k_grid=KNN_K_GRID_FLAG,
     shell:
         """
         python -m scripts.knn_ood predict \
@@ -461,5 +484,6 @@ rule knn_predict_query:
             --knn_index {input.knn_index} \
             --threshold_percentile {params.percentile} \
             --max_k {params.max_k} \
+            {params.k_grid} \
             --output {output.distances}
         """
