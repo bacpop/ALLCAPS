@@ -18,6 +18,13 @@ index key, serotype, genogroup and distance. Useful when the top hit lands on a
 serotype with too few calibration genomes to threshold reliably and you want the
 runner-up. The main ``--output`` CSV is unaffected by this flag.
 
+Pass ``--k_grid 1,5,10,50`` for the same table restricted to a handful of k
+values (``<output>_kgrid.csv``, one row per (sample, k)), where the distance is
+the distance to the k-th neighbour — i.e. the OOD score at that k, the quantity
+``scripts.helpers.knn_k_sweep`` sweeps. Reaching k=1000 via ``--max_k`` would
+write 1000 rows per sample to carry the same information; the grid writes 4.
+Both reports are sliced out of a single neighbour query.
+
 Usage:
   # Fit (build index from ID training embeddings):
   python -m scripts.knn_ood fit \\
@@ -280,9 +287,14 @@ def cli_predict(args: argparse.Namespace) -> None:
 
     # Neighbour report. Column 0 is the deployed k=1 view: how far is each sample
     # from its single closest ID neighbour, and what serotype / genogroup does
-    # that neighbour belong to? Ranks 2..max_k go to the separate top-k CSV.
+    # that neighbour belong to? Ranks 2..max_k go to the separate top-k CSV, and
+    # the --k_grid ranks to the k-grid CSV. One query, widened to whichever of the
+    # two reaches further, then sliced per report.
     max_k = max(1, int(args.max_k))
-    nn_dist, nn_sero, nn_keys = knn.nearest(X, query_is_id=query_is_id, n_neighbours=max_k)
+    k_grid = list(args.k_grid) if args.k_grid else []
+    nn_dist, nn_sero, nn_keys = knn.nearest(
+        X, query_is_id=query_is_id, n_neighbours=max(max_k, *k_grid) if k_grid else max_k
+    )
     out_df["nn_distance"] = nn_dist[:, 0]
     out_df["nn_serotype"] = nn_sero[:, 0]
     out_df["nn_genogroup"] = [
@@ -301,17 +313,58 @@ def cli_predict(args: argparse.Namespace) -> None:
         float(out_df["is_novel_knn"].mean()),
     )
 
+    sample_ids = out_df["sample_id"].to_numpy()
     if max_k > 1:
-        _write_topk_csv(out_df["sample_id"].to_numpy(), nn_dist, nn_sero, nn_keys,
-                        _topk_path(args))
+        _write_topk_csv(sample_ids, nn_dist, nn_sero, nn_keys, max_k, _topk_path(args))
+    if k_grid:
+        _write_k_grid_csv(sample_ids, nn_dist, nn_sero, nn_keys, k_grid, _k_grid_path(args))
+
+
+def _sibling_path(output: str, suffix: str) -> str:
+    """`<output stem>_<suffix>.<ext>`, beside the main CSV."""
+    stem, _, ext = output.rpartition(".")
+    return f"{stem}_{suffix}.{ext}" if stem else f"{output}_{suffix}.csv"
 
 
 def _topk_path(args: argparse.Namespace) -> str:
-    """Explicit --topk_output, else `<output stem>_topk.csv` beside the main CSV."""
-    if getattr(args, "topk_output", None):
-        return args.topk_output
-    stem, _, ext = args.output.rpartition(".")
-    return f"{stem}_topk.{ext}" if stem else f"{args.output}_topk.csv"
+    """Explicit --topk_output, else `<output stem>_topk.csv`."""
+    return getattr(args, "topk_output", None) or _sibling_path(args.output, "topk")
+
+
+def _k_grid_path(args: argparse.Namespace) -> str:
+    """Explicit --k_grid_output, else `<output stem>_kgrid.csv`."""
+    return getattr(args, "k_grid_output", None) or _sibling_path(args.output, "kgrid")
+
+
+def _neighbour_long_df(
+    sample_ids: np.ndarray,
+    nn_dist: np.ndarray,
+    nn_sero: np.ndarray,
+    nn_keys: np.ndarray,
+    ranks: list[int],
+    *,
+    rank_column: str,
+    distance_column: str,
+) -> pd.DataFrame:
+    """Long/tidy neighbour table: one row per (sample, rank), in ``ranks`` order.
+
+    ``ranks`` are 1-based neighbour ranks to keep — every rank for the top-k
+    report, a sparse grid for the k-grid one. ``nn_sample_id`` is the index key
+    of the training locus, so a hit can be traced back to the genome it matched.
+    """
+    columns = np.asarray(ranks, dtype=int) - 1
+    df = pd.DataFrame({
+        "sample_id": np.repeat(sample_ids, len(ranks)),
+        rank_column: np.tile(ranks, len(sample_ids)),
+        "nn_sample_id": nn_keys[:, columns].reshape(-1),
+        "nn_serotype": nn_sero[:, columns].reshape(-1),
+        distance_column: nn_dist[:, columns].reshape(-1),
+    })
+    df["nn_genogroup"] = [
+        map_serotype_to_group(str(s)) if s is not None else None for s in df["nn_serotype"]
+    ]
+    return df[["sample_id", rank_column, "nn_sample_id", "nn_serotype",
+               "nn_genogroup", distance_column]]
 
 
 def _write_topk_csv(
@@ -319,31 +372,59 @@ def _write_topk_csv(
     nn_dist: np.ndarray,
     nn_sero: np.ndarray,
     nn_keys: np.ndarray,
+    max_k: int,
     path: str,
 ) -> None:
-    """Long/tidy neighbour table: one row per (sample, rank), nearest first.
-
-    Kept separate from the deployed output so that file's shape never changes.
-    ``nn_sample_id`` is the index key of the training locus, so a hit can be
-    traced back to the genome it matched."""
-    n_rows, k = nn_dist.shape
-    topk = pd.DataFrame({
-        "sample_id": np.repeat(sample_ids, k),
-        "rank": np.tile(np.arange(1, k + 1), n_rows),
-        "nn_sample_id": nn_keys.reshape(-1),
-        "nn_serotype": nn_sero.reshape(-1),
-        "nn_distance": nn_dist.reshape(-1),
-    })
-    topk["nn_genogroup"] = [
-        map_serotype_to_group(str(s)) if s is not None else None for s in topk["nn_serotype"]
-    ]
-    topk = topk[["sample_id", "rank", "nn_sample_id", "nn_serotype",
-                 "nn_genogroup", "nn_distance"]]
+    """Every rank 1..max_k. Kept separate from the deployed output so that file's
+    shape never changes."""
+    # A small index can hold fewer neighbours than requested; nearest() returns
+    # what it has, so read the width off the array rather than trusting max_k.
+    max_k = min(max_k, nn_dist.shape[1])
+    topk = _neighbour_long_df(sample_ids, nn_dist, nn_sero, nn_keys,
+                              list(range(1, max_k + 1)),
+                              rank_column="rank", distance_column="nn_distance")
     topk.to_csv(path, index=False)
-    logger.info("Wrote top-%d neighbour report (%d rows) to %s", k, len(topk), path)
+    logger.info("Wrote top-%d neighbour report (%d rows) to %s", max_k, len(topk), path)
+
+
+def _write_k_grid_csv(
+    sample_ids: np.ndarray,
+    nn_dist: np.ndarray,
+    nn_sero: np.ndarray,
+    nn_keys: np.ndarray,
+    k_grid: list[int],
+    path: str,
+) -> None:
+    """Same shape as the top-k report, but only the requested k values.
+
+    ``knn_distance`` is the distance to the k-th neighbour — the OOD score at
+    that k, named to match the main CSV's column — so the file doubles as a
+    per-sample k sweep without materialising every intermediate rank."""
+    available = nn_dist.shape[1]
+    usable = [k for k in k_grid if k <= available]
+    if len(usable) < len(k_grid):
+        logger.warning("k_grid values %s exceed the %d neighbours in the index — dropped",
+                       [k for k in k_grid if k > available], available)
+    if not usable:
+        logger.warning("No usable --k_grid values; %s not written", path)
+        return
+    grid = _neighbour_long_df(sample_ids, nn_dist, nn_sero, nn_keys, usable,
+                              rank_column="k", distance_column="knn_distance")
+    grid.to_csv(path, index=False)
+    logger.info("Wrote k-grid neighbour report for k=%s (%d rows) to %s",
+                usable, len(grid), path)
 
 
 # ──────────────────────────── CLI: parser ────────────────────────────
+
+
+def _parse_k_grid(s: str) -> list[int]:
+    """'1,5,10,50' → [1, 5, 10, 50], sorted and deduplicated (mirrors knn_k_sweep)."""
+    grid = sorted({int(x) for x in s.split(",") if x.strip()})
+    if not grid or grid[0] < 1:
+        raise argparse.ArgumentTypeError(
+            f"--k_grid must be a comma-separated list of positive integers, got {s!r}")
+    return grid
 
 
 def main() -> None:
@@ -377,6 +458,14 @@ def main() -> None:
                              "--output CSV is unchanged either way (default: 1)")
     p_pred.add_argument("--topk_output", default=None,
                         help="Path for the --max_k report (default: '<output>_topk.csv')")
+    p_pred.add_argument("--k_grid", type=_parse_k_grid, default=None,
+                        help="Comma-separated k values (e.g. '1,5,10,50'). Writes the same "
+                             "long-format report as --max_k but with one row per (sample, k) "
+                             "for these k only, where the distance is the distance to the "
+                             "k-th neighbour. Off by default; the main --output CSV is "
+                             "unchanged either way")
+    p_pred.add_argument("--k_grid_output", default=None,
+                        help="Path for the --k_grid report (default: '<output>_kgrid.csv')")
     p_pred.add_argument("--sep", default=DEFAULT_SEP)
 
     args = parser.parse_args()
