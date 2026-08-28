@@ -140,7 +140,8 @@ class KnnOOD:
         training vectors — their distances, serotypes and index keys.
 
         Returns ``(distances, serotypes, keys)``, each shaped
-        ``(len(X), n_neighbours)`` and ordered nearest-first. If ``query_is_id``
+        ``(len(X), n_neighbours)`` — fewer columns if the index is too small to
+        supply that many — and ordered nearest-first. If ``query_is_id``
         the index was built from these same vectors, so we ask for one extra
         neighbour and drop the zero-distance self-match at column 0. When no
         serotype labels were stored at fit time the serotype array is filled
@@ -152,6 +153,13 @@ class KnnOOD:
         assert self.index is not None, "Call fit() first."
         assert n_neighbours >= 1, "n_neighbours must be >= 1"
         X = _as_f64(X)
+        # A row has at most len(train_keys) genuine neighbours — one fewer when the
+        # query IS the index, because the self-match doesn't count. Clamp rather
+        # than over-request: past that point the extra column would be the
+        # self-match at distance 0, landing out of order at the highest rank.
+        n_available = len(self.train_keys) - (1 if query_is_id else 0)
+        assert n_available >= 1, "index holds no neighbour to report"
+        n_neighbours = min(n_neighbours, n_available)
         # +1 when querying the index with its own vectors, so that after dropping
         # the self-match we still have n_neighbours genuine neighbours.
         n_search = min(n_neighbours + 1 if query_is_id else n_neighbours, len(self.train_keys))
