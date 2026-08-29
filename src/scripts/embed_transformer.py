@@ -19,6 +19,9 @@ from .utils import chunk_sequence, embed_chunks
 logger = get_logger(__name__)
 
 DEFAULT_RECORDS_PER_BATCH = 32
+# Records hold 1..~14 chunks each, so batching by record count alone leaves peak
+# memory data-order dependent. Bound the forward by chunks instead.
+DEFAULT_MAX_CHUNKS_PER_BATCH = 64
 
 
 def main():
@@ -57,6 +60,15 @@ def main():
         default=DEFAULT_RECORDS_PER_BATCH,
         help="How many FASTA records to fold into one base-model forward.",
     )
+    parser.add_argument(
+        "--max_chunks_per_batch",
+        type=int,
+        default=DEFAULT_MAX_CHUNKS_PER_BATCH,
+        help=(
+            "Hard cap on chunks per base-model forward. Bounds peak GPU memory "
+            "regardless of how many chunks the buffered records happen to hold."
+        ),
+    )
     args = parser.parse_args()
 
     # Set seeds for reproducible embeddings
@@ -90,6 +102,39 @@ def main():
     # Buffer records, fold all their chunks into one forward, slice back.
     pending: list[dict] = []  # {sample_name, chunks_path, chunks}
 
+    def embed_capped(chunks):
+        """Embed ``chunks`` in sub-batches of at most ``max_chunks_per_batch``.
+
+        Records carry 1..~14 chunks each (short-contig fallback vs a full
+        ``seq_max_len`` contig), so a fixed record count leaves the forward
+        anywhere from ~30 to ~450 sequences wide. Capping chunks keeps peak
+        memory flat, and an OOM halves the sub-batch rather than killing the run.
+        """
+        out = []
+        i = 0
+        while i < len(chunks):
+            n = min(args.max_chunks_per_batch, len(chunks) - i)
+            while True:
+                try:
+                    out.append(
+                        embed_chunks(
+                            chunks[i : i + n],
+                            tokenizer,
+                            model,
+                            args.device,
+                            model_max_length,
+                        )
+                    )
+                    break
+                except torch.cuda.OutOfMemoryError:
+                    torch.cuda.empty_cache()
+                    if n == 1:
+                        raise
+                    n = max(1, n // 2)
+                    logger.warning("CUDA OOM — retrying with %d chunks.", n)
+            i += n
+        return torch.cat(out, dim=0)
+
     def flush(buf):
         if not buf:
             return
@@ -102,9 +147,7 @@ def main():
             all_chunks.extend(entry["chunks"])
             cursor += n
         try:
-            pooled = embed_chunks(
-                all_chunks, tokenizer, model, args.device, model_max_length
-            )  # (sum_chunks, D)
+            pooled = embed_capped(all_chunks)  # (sum_chunks, D)
         except Exception as exc:
             names = ", ".join(e["sample_name"] for e in buf)
             logger.error("Error embedding batch [%s]: %s", names, exc)
