@@ -103,8 +103,7 @@ boundary; a runtime assertion enforces it.
 - `src/scripts/trihead/` — training, inference and query processing for the deployed model.
 - `src/scripts/tests/` — the round-trip sanity check comparing the training and query
   embedding paths. Run it after any change to chunking, pooling or base-model loading.
-- `jobs/` — SLURM submission scripts for the cluster runs, with a dated log of what was run
-  and why in [jobs/README.md](jobs/README.md).
+
 
 Modules run as packages from `src/`, e.g. `python -m scripts.knn_ood predict ...`.
 
@@ -115,6 +114,8 @@ export WANDB_MODE=offline    # during the run
 wandb sync --sync-all        # afterwards
 ```
 
-## Contributing
+## Contact
+[Alireza Tajmirriahi](https://github.com/AlirezaT99) and [Sam Horsfield](https://github.com/samhorsfield96) — please open an issue for questions, bugs, or feature requests.
 
-Issues and PRs welcome — please include the command you ran, the environment, and any logs.
+## License
+[MIT](LICENSE)
