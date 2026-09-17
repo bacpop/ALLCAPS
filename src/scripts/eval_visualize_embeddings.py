@@ -32,7 +32,7 @@ def calculate_pca(embeddings, labels, output_prefix):
 
 def calculate_tsne(embeddings, labels, output_prefix):
     out_path = output_prefix + ".tsne.csv"
-    tsne = TSNE(n_components=2, random_state=42, n_iter=1000)
+    tsne = TSNE(n_components=2, random_state=42, max_iter=1000)
     TSNE_embedding = tsne.fit_transform(embeddings)
     TSNE_embedding_df = pd.DataFrame(TSNE_embedding)
 
@@ -73,7 +73,7 @@ def plot_projection(df, method, output_prefix, params={}):
 
     colors = plt.cm.tab20(
         np.linspace(0, 1, len(unique_serotypes))
-    )  # TODO explore colormaps
+    )
     color_map = dict(zip(unique_serotypes, colors))
 
     plt.figure(figsize=figsize)
@@ -105,6 +105,45 @@ def plot_projection(df, method, output_prefix, params={}):
     plt.tight_layout()
     plt.savefig(output_prefix + f"_{method.lower()}.pdf")
     plt.close()
+
+
+def load_additional_source(embeddings_path, labels_path, legend, label_sep):
+    """Load a single additional embeddings source and build its labels frame.
+
+    Returns a tuple of (embeddings array, labels DataFrame with a "Serotype"
+    column). When `labels_path` is given, each record's Serotype is appended to
+    `legend` (e.g. "TEST|20A"); otherwise every record is labelled `legend`.
+    Returns None (and logs a warning) when the source has no records, so an
+    empty overlay is skipped instead of crashing the whole plot.
+    """
+    npz = np.load(embeddings_path, allow_pickle=True)
+    additional_embeddings, additional_record_ids = npz["embeddings"], npz["record_ids"]
+
+    if len(additional_embeddings) == 0:
+        logger.warning(
+            "Additional source '%s' contains 0 embeddings; skipping it.",
+            embeddings_path,
+        )
+        return None
+
+    additional_labels_df = pd.DataFrame(
+        {"Serotype": [legend] * len(additional_embeddings)}
+    )
+    if labels_path:
+        additional_labels = pd.read_csv(labels_path)["Serotype"]
+        assert len(additional_embeddings) == len(additional_labels), (
+            f"The number of additional embeddings ({len(additional_embeddings)}) in "
+            f"{embeddings_path} must match the number of additional labels "
+            f"({len(additional_labels)}) in {labels_path}."
+        )
+        additional_labels_df.loc[:, "Serotype"] = (
+            additional_labels_df["Serotype"] + label_sep + additional_labels
+        )
+    additional_labels_df.set_index(
+        legend + label_sep + pd.Index(additional_record_ids),
+        inplace=True,
+    )
+    return additional_embeddings, additional_labels_df
 
 
 def parse_args():
@@ -161,20 +200,26 @@ def parse_args():
     parser.add_argument(
         "--additional_embeddings",
         type=str,
+        nargs="+",
         default=None,
-        help="Path to additional embeddings to include in the plot.",
+        help="Paths to one or more additional embeddings (.npz) to include in the plot.",
     )
     parser.add_argument(
         "--additional_labels",
         type=str,
+        nargs="+",
         default=None,
-        help="The label to use for additional embeddings.",
+        help="Paths to label CSVs for the additional embeddings, one per "
+        "--additional_embeddings entry (in the same order).",
     )
     parser.add_argument(
         "--additional_legend",
         type=str,
-        default="Query",
-        help="The label to use for additional embeddings in the legend. If the --additional-labels argument is provided, this will be used as a prefix.",
+        nargs="+",
+        default=["Query"],
+        help="Legend label for each additional embeddings source, one per "
+        "--additional_embeddings entry. If --additional_labels is provided, "
+        "this is used as a prefix.",
     )
     args = parser.parse_args()
 
@@ -244,35 +289,40 @@ def main(args):
     embeddings, labels = embeddings[indices_mask], labels[indices_mask]
 
     if args.additional_embeddings:
-        additional_embeddings_npz = np.load(
-            args.additional_embeddings, allow_pickle=True
+        legends = args.additional_legend
+        labels_paths = args.additional_labels
+        n_sources = len(args.additional_embeddings)
+
+        assert len(legends) == n_sources, (
+            f"The number of --additional_legend values ({len(legends)}) must match "
+            f"the number of --additional_embeddings values ({n_sources})."
         )
-        additional_embeddings, additional_record_ids = (
-            additional_embeddings_npz["embeddings"],
-            additional_embeddings_npz["record_ids"],
-        )
-        additional_labels_df = pd.DataFrame(
-            {"Serotype": [args.additional_legend] * len(additional_embeddings)}
-        )
-        if args.additional_labels:
-            additional_labels = pd.read_csv(args.additional_labels)["Serotype"]
-            assert len(additional_embeddings) == len(additional_labels), (
-                "The number of additional embeddings must match the number of additional labels."
+        if labels_paths is None:
+            labels_paths = [None] * n_sources
+        else:
+            assert len(labels_paths) == n_sources, (
+                f"The number of --additional_labels values ({len(labels_paths)}) must "
+                f"match the number of --additional_embeddings values ({n_sources})."
             )
-            additional_labels_df.loc[:, "Serotype"] = (
-                additional_labels_df["Serotype"] + LABEL_SEP + additional_labels
+
+        for emb_path, labels_path, legend in zip(
+            args.additional_embeddings, labels_paths, legends
+        ):
+            source = load_additional_source(
+                emb_path, labels_path, legend, LABEL_SEP
             )
-        additional_labels_df.set_index(
-            args.additional_legend + LABEL_SEP + pd.Index(additional_record_ids),
-            inplace=True,
-        )
-        logger.info(
-            "Adding %d additional embeddings to the plot.", len(additional_embeddings)
-        )
-        embeddings = np.vstack([embeddings, additional_embeddings])
-        labels = pd.concat(
-            [labels, additional_labels_df], ignore_index=True
-        )  # .reset_index(drop=True) TODO ?
+            if source is None:
+                continue
+            additional_embeddings, additional_labels_df = source
+            logger.info(
+                "Adding %d additional embeddings from %s to the plot.",
+                len(additional_embeddings),
+                emb_path,
+            )
+            embeddings = np.vstack([embeddings, additional_embeddings])
+            labels = pd.concat(
+                [labels, additional_labels_df], ignore_index=True
+            )  # .reset_index(drop=True) TODO ?
 
     calc_fn = partial(
         calculate_umap
