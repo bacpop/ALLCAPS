@@ -1,13 +1,37 @@
-numpy
-pandas
-tqdm
-biopython
-torch
-torchvision
-transformers
-scikit-learn
-scipy
-matplotlib
-seaborn
-wandb
-accelerate
+# Runtime dependencies for ALLCAPS.
+#
+# Lower bounds only — these are the versions the pipeline is known to work with,
+# not a lockfile. If you need bit-reproducibility of the published results, pin
+# exactly and record the pins alongside your run.
+#
+# Two notes on version sensitivity:
+#  - torch >= 2.6 defaults `torch.load(weights_only=True)`. The ALLCAPS checkpoint
+#    contains only tensors, dicts, strings and tuples, so it loads unchanged
+#    (verified on torch 2.10).
+#  - A `.pkl` kNN index is an unpickled sklearn estimator and is version-fragile
+#    across scikit-learn releases. Prefer the `.npz` index
+#    (`python -m scripts.knn_ood export`), which is plain arrays.
+
+numpy>=1.24
+pandas>=2.0
+scipy>=1.10
+scikit-learn>=1.3
+tqdm>=4.65
+
+# Sequence I/O and locus cutting
+biopython>=1.81
+mappy>=2.26                # minimap2 bindings — required by scripts.data_locus_cutter
+
+# Model
+torch>=2.0
+transformers>=4.35        # ProkBERT is loaded with trust_remote_code=True
+accelerate>=0.25          # not imported directly; transformers uses it for device placement
+
+# Plotting and dimensionality reduction
+matplotlib>=3.7
+seaborn>=0.12
+umap-learn>=0.5            # required by scripts.eval_visualize_embeddings --method umap
+
+# Workflow and experiment tracking
+snakemake>=7.32
+wandb>=0.16                # training calls wandb.init(); set WANDB_MODE=offline to run detached

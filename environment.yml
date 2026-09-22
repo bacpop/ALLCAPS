@@ -1,4 +1,12 @@
 name: all-caps
+
+# Conda equivalent of requirements.txt. Use this one on a GPU machine: it pulls
+# pytorch-cuda from the pytorch/nvidia channels, which pip cannot do reliably.
+#
+#   conda env create -f environment.yml && conda activate all-caps
+#
+# On CPU-only machines drop the `nvidia::pytorch-cuda` line.
+
 channels:
   - conda-forge
   - bioconda
@@ -6,21 +14,24 @@ channels:
   - nvidia
 dependencies:
   - python=3.10
-  - numpy
-  - pandas
-  - tqdm
-  - biopython
-  - pytorch::pytorch
-  - pytorch::torchvision
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy>=1.10
+  - scikit-learn>=1.3
+  - tqdm>=4.65
+  - biopython>=1.81
+  - matplotlib>=3.7
+  - seaborn>=0.12
+  - umap-learn>=0.5
+  # minimap2 bindings used by scripts.data_locus_cutter
+  - bioconda::mappy>=2.26
+  # Torch from the pytorch channel; do NOT also install it via pip below, or the
+  # CUDA build gets silently replaced by the generic pip wheel.
+  - pytorch::pytorch>=2.0
   - nvidia::pytorch-cuda
-  - scikit-learn
-  - scipy
-  - matplotlib
-  - seaborn
+  - bioconda::snakemake>=7.32
   - pip
   - pip:
-      - torch
-      - transformers
-      - wandb
-      - accelerate
-
+      - transformers>=4.35
+      - accelerate>=0.25
+      - wandb>=0.16
