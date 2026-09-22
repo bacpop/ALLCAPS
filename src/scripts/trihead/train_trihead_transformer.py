@@ -50,8 +50,12 @@ from collections import Counter
 logger = get_logger(__name__)
 
 EPS = 1e-9
-ALPHA_SERO = 2
-ALPHA_GENO = 1
+# Loss weights for the two label heads, overridable via --model_params
+# ("weight_sero" / "weight_geno"). The released checkpoint was trained with
+# weight_geno = 0: the genogroup head was found to add nothing, so it is carried
+# untrained and its predictions are meaningless. See TRAINING.md.
+DEFAULT_WEIGHT_SERO = 2
+DEFAULT_WEIGHT_GENO = 1
 WANDB_PROJECT_NAME = "logistic-trihead-augment"
 
 
@@ -184,6 +188,9 @@ def train_one_epoch(
     temperature,
     serotype_to_idx,
     genogroup_to_idx,
+    *,
+    weight_sero=DEFAULT_WEIGHT_SERO,
+    weight_geno=DEFAULT_WEIGHT_GENO,
 ):
     model.train()
     total_loss, ce_loss, serotype_loss, genogroup_loss, contrastive_loss = (
@@ -264,8 +271,8 @@ def train_one_epoch(
 
         loss = (
             ce_loss_val
-            + ALPHA_SERO * serotype_loss_val
-            + ALPHA_GENO * genogroup_loss_val
+            + weight_sero * serotype_loss_val
+            + weight_geno * genogroup_loss_val
             + alpha * contrastive_loss_val
         )
         optimizer.zero_grad()
@@ -301,6 +308,9 @@ def evaluate(
     temperature,
     serotype_to_idx,
     genogroup_to_idx,
+    *,
+    weight_sero=DEFAULT_WEIGHT_SERO,
+    weight_geno=DEFAULT_WEIGHT_GENO,
 ):
     model.eval()
     total_loss = 0.0
@@ -380,8 +390,8 @@ def evaluate(
 
             loss = (
                 ce_loss_val
-                + ALPHA_SERO * serotype_loss_val
-                + ALPHA_GENO * genogroup_loss_val
+                + weight_sero * serotype_loss_val
+                + weight_geno * genogroup_loss_val
                 + alpha * contrastive_loss_val
             )
             total_loss += loss.item()
@@ -450,6 +460,8 @@ def main(args):
     num_layers = args.model_params.get("num_layers", DEFAULT_NUM_LAYERS)
     nhead = args.model_params.get("nhead", DEFAULT_NHEAD)
     alpha = args.model_params.get("alpha", DEFAULT_CONTRASTIVE_LOSS_RATIO)
+    weight_sero = args.model_params.get("weight_sero", DEFAULT_WEIGHT_SERO)
+    weight_geno = args.model_params.get("weight_geno", DEFAULT_WEIGHT_GENO)
     output_dim = args.model_params.get("output_dim", DEFAULT_OUTPUT_DIM)
     embedding_dim = args.model_params.get("embedding_dim", DEFAULT_EMBEDDING_DIM)
 
@@ -560,6 +572,8 @@ def main(args):
             "batch_size": args.batch_size,
             "lr": args.lr,
             "alpha": alpha,
+            "weight_sero": weight_sero,
+            "weight_geno": weight_geno,
             "output_dim": output_dim,
             "num_serotypes": num_serotypes,
             "num_genogroups": num_genogroups,
@@ -737,6 +751,8 @@ def main(args):
                 temperature,
                 serotype_to_idx,
                 genogroup_to_idx,
+                weight_sero=weight_sero,
+                weight_geno=weight_geno,
             )
 
             test_loss, cbl_accuracy, serotype_accuracy, genogroup_accuracy = evaluate(
@@ -750,6 +766,8 @@ def main(args):
                 temperature,
                 serotype_to_idx,
                 genogroup_to_idx,
+                weight_sero=weight_sero,
+                weight_geno=weight_geno,
             )
             logger.info(
                 "Fold %d - Epoch %d - Test Loss: %.4f, CBL Accuracy: %.4f, Serotype Accuracy: %.4f, Genogroup Accuracy: %.4f",
@@ -881,6 +899,8 @@ def main(args):
             temperature,
             serotype_to_idx,
             genogroup_to_idx,
+            weight_sero=weight_sero,
+            weight_geno=weight_geno,
         )
 
     # Evaluate on clean (unaugmented) data for honest metrics
@@ -904,6 +924,8 @@ def main(args):
         temperature,
         serotype_to_idx,
         genogroup_to_idx,
+        weight_sero=weight_sero,
+        weight_geno=weight_geno,
     )
     logger.info(
         "Final model - Loss: %.4f, CBL Accuracy: %.4f, Serotype Accuracy: %.4f, Genogroup Accuracy: %.4f",
