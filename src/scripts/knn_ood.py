@@ -50,6 +50,7 @@ Usage:
 """
 
 import argparse
+import json
 import pickle
 
 import numpy as np
@@ -186,23 +187,73 @@ class KnnOOD:
             nn_sero = np.full(idxs.shape, None, dtype=object)
         return nn_dist, nn_sero, nn_keys
 
+    def threshold(self, percentile: float) -> float:
+        """The novelty threshold: that percentile of the training LOO k-th-NN
+        distances. Deployed at ``percentile=95``."""
+        assert self.train_loo_distances is not None, "Call fit() or load() first."
+        return float(np.percentile(self.train_loo_distances, percentile))
+
+    def _state(self) -> dict:
+        """The five arrays plus two scalars that fully define a fitted index."""
+        assert self.index is not None, "Cannot serialise unfitted KnnOOD."
+        return {
+            "k": self.k,
+            "metric": self.metric,
+            "train_data": self.index._fit_X,
+            "train_keys": self.train_keys,
+            "train_serotypes": self.train_serotypes,
+            "train_loo_distances": self.train_loo_distances,
+        }
+
     def save(self, path: str) -> None:
-        assert self.index is not None, "Cannot save unfitted KnnOOD."
-        with open(path, "wb") as f:
-            pickle.dump({
-                "k": self.k,
-                "metric": self.metric,
-                "train_data": self.index._fit_X,
-                "train_keys": self.train_keys,
-                "train_serotypes": self.train_serotypes,
-                "train_loo_distances": self.train_loo_distances,
-            }, f)
+        """Write the index to ``path``; ``.npz`` gets the portable format.
+
+        The state is plain arrays and two scalars — nothing about it needs
+        pickle, and a pickled sklearn estimator is both version-fragile and
+        flagged as unsafe by model hosts. ``.npz`` is therefore preferred for
+        anything shipped; ``.pkl`` stays the default so existing indices and
+        job scripts keep working.
+        """
+        state = self._state()
+        if path.endswith(".npz"):
+            serotypes = state["train_serotypes"]
+            np.savez_compressed(
+                path,
+                k=np.asarray(state["k"]),
+                metric=np.asarray(state["metric"]),
+                train_data=np.asarray(state["train_data"], dtype=np.float64),
+                train_keys=np.asarray(state["train_keys"], dtype=np.str_),
+                # `None` when fit() got no labels — store an empty array and
+                # restore it as None, so the round-trip stays lossless without
+                # needing an object-dtype array (which would re-introduce pickle).
+                train_serotypes=(
+                    np.empty(0, dtype=np.str_) if serotypes is None
+                    else np.asarray(serotypes, dtype=np.str_)
+                ),
+                train_loo_distances=np.asarray(state["train_loo_distances"], dtype=np.float64),
+            )
+        else:
+            with open(path, "wb") as f:
+                pickle.dump(state, f)
         logger.info("KNN index saved to %s", path)
 
     @classmethod
     def load(cls, path: str) -> "KnnOOD":
-        with open(path, "rb") as f:
-            data = pickle.load(f)
+        if path.endswith(".npz"):
+            with np.load(path, allow_pickle=False) as npz:
+                data = {
+                    "k": int(npz["k"]),
+                    "metric": str(npz["metric"]),
+                    "train_data": npz["train_data"],
+                    "train_keys": npz["train_keys"],
+                    "train_serotypes": (
+                        None if npz["train_serotypes"].size == 0 else npz["train_serotypes"]
+                    ),
+                    "train_loo_distances": npz["train_loo_distances"],
+                }
+        else:
+            with open(path, "rb") as f:
+                data = pickle.load(f)
         obj = cls(k=data["k"], metric=data["metric"])
         n_search = min(obj.k + 1, len(data["train_data"]))
         obj.index = NearestNeighbors(n_neighbors=n_search, metric=obj.metric, algorithm="brute")
@@ -311,7 +362,7 @@ def cli_predict(args: argparse.Namespace) -> None:
 
     # Mark "novel" using the percentile-of-ID convention used elsewhere in the
     # pipeline (matches the energy threshold approach in energy_summary.json).
-    threshold = float(np.percentile(knn.train_loo_distances, args.threshold_percentile))
+    threshold = knn.threshold(args.threshold_percentile)
     out_df["is_novel_knn"] = out_df["knn_distance"] > threshold
     out_df.to_csv(args.output, index=False)
     logger.info(
@@ -326,6 +377,44 @@ def cli_predict(args: argparse.Namespace) -> None:
         _write_topk_csv(sample_ids, nn_dist, nn_sero, nn_keys, max_k, _topk_path(args))
     if k_grid:
         _write_k_grid_csv(sample_ids, nn_dist, nn_sero, nn_keys, k_grid, _k_grid_path(args))
+
+
+# ──────────────────────────── CLI: export ────────────────────────────
+
+
+def cli_export(args: argparse.Namespace) -> None:
+    """Re-serialise a fitted index, and resolve its threshold into a JSON sidecar.
+
+    Used to turn the pickle written by ``fit`` into the pickle-free ``.npz`` that
+    gets published. The sidecar records the deployed operating point as a plain
+    number so a reimplementation never has to recompute the percentile — or
+    silently recompute it differently.
+    """
+    knn = KnnOOD.load(args.knn_index)
+    knn.save(args.output)
+
+    sidecar = args.config_output or _sibling_path(args.output, "config").replace(
+        ".npz", ".json"
+    )
+    config = {
+        "k": knn.k,
+        "metric": knn.metric,
+        "threshold_percentile": args.threshold_percentile,
+        "threshold": knn.threshold(args.threshold_percentile),
+        "n_train": int(len(knn.train_keys)),
+        "embedding_dim": int(knn.index._fit_X.shape[1]),
+        "note": (
+            "Promote embeddings to float64 before computing cosine distance; in "
+            "float32 the 1 - x.y subtraction cancels for near-duplicate loci."
+        ),
+    }
+    with open(sidecar, "w") as f:
+        json.dump(config, f, indent=2)
+    logger.info(
+        "Exported index (n=%d, k=%d) to %s; threshold %.6f at p%g written to %s",
+        config["n_train"], knn.k, args.output,
+        config["threshold"], args.threshold_percentile, sidecar,
+    )
 
 
 def _sibling_path(output: str, suffix: str) -> str:
@@ -477,11 +566,23 @@ def main() -> None:
                         help="Path for the --k_grid report (default: '<output>_kgrid.csv')")
     p_pred.add_argument("--sep", default=DEFAULT_SEP)
 
+    p_exp = subparsers.add_parser(
+        "export", help="Re-serialise a fitted index (e.g. .pkl -> pickle-free .npz)")
+    p_exp.add_argument("--knn_index", required=True, help="Path to the fitted index")
+    p_exp.add_argument("--output", required=True,
+                       help="Destination; '.npz' writes the portable format")
+    p_exp.add_argument("--threshold_percentile", type=float, default=95.0,
+                       help="Operating point to resolve into the JSON sidecar (default: 95)")
+    p_exp.add_argument("--config_output", default=None,
+                       help="Path for the JSON sidecar (default: '<output>_config.json')")
+
     args = parser.parse_args()
     if args.command == "fit":
         cli_fit(args)
     elif args.command == "predict":
         cli_predict(args)
+    elif args.command == "export":
+        cli_export(args)
     else:
         parser.print_help()
 

@@ -1,32 +1,72 @@
-results_dir: "my_results"
-cbl_fasta: "data/cbl_sequences.fasta"
-noncbl_fasta: "data/noncbl_sequences.fasta"
-data_dir: "data"
-metadata: "data/monocle-metadata.tsv"
-infiles: "data/infiles.txt"
-locus_cutter_query: "data/dexB_aliA_ATCC700669.fasta"
-label_column: "ERR"
-skip_labels: []
-serotypes: []  # list of serotypes for LOO expansion
-labels: "data/labels.txt"
-flank: "data/dexB_aliA_ATCC700669.fasta"
-raw_files: "/data/fasta_paths.txt"
-query_path: "/data/input_sequence.fa"
-chunk_size: 4000
-stride_ratio: 0.5
-device: "cuda"
-batch_size: 128
-epochs: 10
-lr: 0.001
+# ALLCAPS pipeline configuration.
+#
+#   cp src/config.yaml.template config.yaml   # then edit the paths below
+#   cd src && snakemake -n --configfile ../config.yaml
+#
+# Every key here is read by src/Snakefile. `config.yaml` is gitignored.
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+results_dir: "results/my_run"     # all outputs land here
+data_dir: "results/my_run/data"   # intermediate FASTA/metadata
+
+metadata: "data/monocle-metadata.csv"   # raw sample metadata (csv or tsv)
+infiles: "data/infiles.txt"             # text file: one raw assembly FASTA path per line
+query_path: "data/query.fasta"          # loci to serotype / screen for novelty
+
+# Flanking genes used to cut the cps locus out of an assembly. Shipped with the repo.
+locus_cutter_query: "../assets/dexB_aliA_ATCC700669.fasta"
+
+# ── Locus cutting ─────────────────────────────────────────────────────────────
+locus_cutter_cutoff: 0.7          # min fraction of the flanking gene that must align
+locus_cutter_max_extension: 30000 # cap on how far the locus may be extended (integer)
+
+# ── Train/test split ──────────────────────────────────────────────────────────
+# The splitter merges several (fasta, metadata) sources. `split_fastas` and
+# `split_metadata` must be the same length and positionally aligned — entry i of
+# one names the sequences whose labels are entry i of the other. For the plain
+# single-source case, point both at the locus cutter's two outputs and reuse the
+# cleaned metadata for each.
+split_fastas:
+  - "results/my_run/data/contigs.fasta"
+  - "results/my_run/data/contigs_noncbl.fasta"
+split_metadata:
+  - "results/my_run/cleaned_labels.csv"
+  - "results/my_run/cleaned_labels.csv"
+split_ratios: "0.9"               # train fraction, counted in SAMPLES not contigs
+
+# ── Base embeddings (ProkBERT) ────────────────────────────────────────────────
 base_model: "neuralbioinfo/prokbert-mini-long"
-model_params: '{"temperature": 0.07, "k_folds": 5, "weight_fine": 1, "weight_coarse": 0.4, "random_state": 42, "embedding_dim": 384}'
-sketch_k: 31
-sketch_size: 10000
-# kNN novelty detection (deployed configuration)
-knn_k: 1                        # distance to the k-th nearest training locus
-knn_threshold_percentile: 95.0  # threshold = this percentile of training LOO k-th-NN distances
-knn_max_k: 5                    # also emit a top-K neighbour report per query
-knn_k_grid: ""                  # e.g. "1,5,10,20,50,100,200,500,1000" — per-sample k sweep
-                                # (<output>_kgrid.csv); "" = off. Needs no change to knn_k.
-lda_components: 5
-novelty_thresholds: "0.1,0.2,0.9,0.98"
+chunk_size: 4000                  # bp per chunk
+stride_ratio: 0.5                 # 50% overlap between chunks
+seq_max_len: 30000                # contigs longer than this are truncated
+records_per_batch: 32
+max_chunks_per_batch: 64
+
+# ── Training ──────────────────────────────────────────────────────────────────
+device: "cuda"                    # training requires CUDA; see TRAINING.md
+epochs: 100
+batch_size: 128
+lr: 0.001
+
+# JSON *string* of model hyperparameters. Must contain `embedding_dim` — the
+# workflow validates this at load time and fails fast without it.
+#
+# The values below reproduce the released ALLCAPS checkpoint. Read TRAINING.md
+# before changing any of them; in particular `alpha: 0` disables the contrastive
+# loss and `weight_geno: 0` disables the genogroup head, both of which the
+# released model relies on.
+model_params: '{"embedding_dim": 384, "output_dim": 128, "num_layers": 1, "nhead": 4,
+                "k_folds": 5, "random_state": 42, "temperature": 0.07,
+                "weight_fine": 1, "weight_coarse": 0.4,
+                "alpha": 0, "weight_sero": 2, "weight_geno": 0,
+                "dataset_name": "multidomain_chunked"}'
+
+skip_labels: []                   # serotypes to drop entirely, e.g. ["15B/15C"]
+serotypes: []                     # serotypes to hold out for LOO; [] disables those rules
+
+# ── Novelty detection (deployed configuration) ────────────────────────────────
+knn_k: 1                          # distance to the k-th nearest training locus
+knn_threshold_percentile: 95.0    # threshold = this percentile of training LOO k-th-NN distances
+knn_max_k: 5                      # also emit a top-K neighbour report per query
+knn_k_grid: ""                    # e.g. "1,5,10,50,100,1000" — per-sample k sweep
+                                  # (<output>_kgrid.csv); "" = off. Independent of knn_k.

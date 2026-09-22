@@ -61,10 +61,13 @@ rule locus_cutting:
         query=config["locus_cutter_query"],
         outpref=f"{config['data_dir']}/contigs",
         cutoff=config.get("locus_cutter_cutoff", 0.7),
-        max_extension=config.get("locus_cutter_max_extension", 1e9)
+        # int() because data_locus_cutter declares --max-extension as type=int;
+        # a YAML float (1e9) would arrive as "1000000000.0" and fail to parse.
+        max_extension=int(config.get("locus_cutter_max_extension", 30_000))
     output:
-        f"{config['data_dir']}/contigs_cleaned.fasta",
-        f"{config['data_dir']}/contigs_noncbl_cleaned.fasta"
+        # data_locus_cutter writes "<outpref>.fasta" and "<outpref>_noncbl.fasta".
+        f"{config['data_dir']}/contigs.fasta",
+        f"{config['data_dir']}/contigs_noncbl.fasta"
     shell:
         """
         python -m scripts.data_locus_cutter \
@@ -72,27 +75,31 @@ rule locus_cutting:
             --cutoff {params.cutoff} \
             --query {params.query} \
             --outpref {params.outpref} \
-            --max_extension {params.max_extension} \
+            --max-extension {params.max_extension} \
             --save-noncbl
         """
 
 rule labels_preprocessing:
     input:
-        config["metadata"]
+        metadata=config["metadata"],
+        cbl=f"{config['data_dir']}/contigs.fasta",
+        noncbl=f"{config['data_dir']}/contigs_noncbl.fasta"
     output:
         f"{RESULTS_DIR}/cleaned_labels.csv"
     shell:
         """
         python -m scripts.data_labels_preprocessing \
-            --metadata {input} \
-            --output_dir {RESULTS_DIR}
+            --metadata {input.metadata} \
+            --output_dir {RESULTS_DIR} \
+            --cbl-fasta {input.cbl} \
+            --noncbl-fasta {input.noncbl}
         """
 
 rule train_test_split:
     """Combine multiple FASTA/metadata sources and stratified-split into train/test."""
     input:
-        cbl=f"{config['data_dir']}/contigs_cleaned.fasta",
-        noncbl=f"{config['data_dir']}/contigs_noncbl_cleaned.fasta",
+        cbl=f"{config['data_dir']}/contigs.fasta",
+        noncbl=f"{config['data_dir']}/contigs_noncbl.fasta",
         labels=f"{RESULTS_DIR}/cleaned_labels.csv"
     params:
         fastas=" ".join(config.get("split_fastas", [])),
