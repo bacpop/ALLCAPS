@@ -35,8 +35,42 @@ on every fold-level metric, so it is the deployed one.
 ```bash
 conda create -n pneumo python=3.10 -y && conda activate pneumo
 pip install -r requirements.txt
-pip install snakemake            # not in requirements.txt
 ```
+
+Or, on a GPU machine, `conda env create -f environment.yml && conda activate all-caps` — that
+route pulls a CUDA-matched PyTorch, which pip cannot do reliably.
+
+## Serotype a locus with a trained model
+
+The shortest useful path — no training, no Snakemake. Given a *cps* locus FASTA, a checkpoint
+and a fitted kNN index:
+
+```bash
+cd src
+
+# Serotype calls + the pooled embeddings
+python -m scripts.trihead.process_trihead_query \
+    --query        my_loci.fasta \
+    --model_path   transformer_model.pth \
+    --energy_summary energy_summary.json \
+    --output_dir   out/ \
+    --device       cpu
+
+# The deployed novelty call
+python -m scripts.knn_ood predict \
+    --input_type query \
+    --embeddings out/query_embeddings.npz \
+    --knn_index  knn_index.npz \
+    --threshold_percentile 95.0 \
+    --max_k 5 \
+    --output out/knn_query_distances.csv
+```
+
+ProkBERT is downloaded from the Hub on first run. If you are starting from whole assemblies
+rather than cut loci, run `scripts.data_locus_cutter` first — it cuts between the `dexB`/`aliA`
+flanks shipped in [assets/](assets/).
+
+To train your own model instead, see **[TRAINING.md](TRAINING.md)**.
 
 ## Run the pipeline
 
@@ -58,9 +92,11 @@ snakemake --cores 4 --configfile ../config.yaml
 | `metadata` | Sample metadata; needs a sample id, contig id, serotype and `Is_capsule` |
 | `locus_cutter_query` | FASTA of the flanking genes used to cut the locus |
 | `query_path` | Sequences to serotype / screen for novelty |
+| `split_fastas`, `split_metadata` | Positionally aligned lists of sequence/label sources to merge before splitting |
+| `split_ratios` | Train fraction, counted in **samples** not contigs |
 | `serotypes` | Serotypes to hold out for LOO; leave empty to skip those rules |
 | `knn_k`, `knn_threshold_percentile`, `knn_max_k` | Novelty detector; defaults `1`, `95.0`, `5` |
-| `model_params` | JSON of model hyperparameters (must include `embedding_dim`) |
+| `model_params` | JSON **string** of model hyperparameters (must include `embedding_dim`) — see [TRAINING.md](TRAINING.md) |
 
 ## Pipeline rules
 
@@ -71,7 +107,9 @@ snakemake --cores 4 --configfile ../config.yaml
 
 `train_model_loo`, `embed_chunks_loo` and `serotype_classification_loo` repeat training and
 evaluation with one serotype withheld, and only materialise when `serotypes` is populated.
-See [src/README.md](src/README.md) for the rule-by-rule breakdown.
+See [src/README.md](src/README.md) for the rule-by-rule breakdown and a one-line description of
+every module. On a cluster, [jobs/run_snakemake.sh](jobs/run_snakemake.sh) submits the whole DAG
+and [jobs/allcaps_slurm.sh](jobs/allcaps_slurm.sh) drives it stage by stage.
 
 ## Outputs
 
@@ -103,6 +141,8 @@ boundary; a runtime assertion enforces it.
 - `src/scripts/trihead/` — training, inference and query processing for the deployed model.
 - `src/scripts/tests/` — the round-trip sanity check comparing the training and query
   embedding paths. Run it after any change to chunking, pooling or base-model loading.
+- `assets/` — the `dexB`/`aliA` flanking genes used to cut the locus.
+- `jobs/` — the two cluster driver scripts.
 
 
 Modules run as packages from `src/`, e.g. `python -m scripts.knn_ood predict ...`.
@@ -118,4 +158,34 @@ wandb sync --sync-all        # afterwards
 [Alireza Tajmirriahi](https://github.com/AlirezaT99) and [Sam Horsfield](https://github.com/samhorsfield96) — please open an issue for questions, bugs, or feature requests.
 
 ## License
-[MIT](LICENSE)
+
+**ALLCAPS — both the code in this repository and the trained weights — is released under the
+[MIT License](LICENSE).** That grant covers only what we made.
+
+> ### ⚠️ Third-party dependency notice
+>
+> **ALLCAPS cannot run on its own.** It requires
+> [ProkBERT-mini-long](https://huggingface.co/neuralbioinfo/prokbert-mini-long) at inference time —
+> every sequence is embedded by ProkBERT before ALLCAPS sees it — and those weights are licensed
+> [CC-BY-NC-4.0](https://creativecommons.org/licenses/by-nc/4.0/), which **prohibits commercial
+> use**.
+>
+> Our MIT license conveys **no rights whatsoever in ProkBERT**. You are responsible for complying
+> with ProkBERT's license independently. In practice: although ALLCAPS itself is MIT, you cannot run
+> this pipeline commercially without separate permission from the ProkBERT authors.
+
+| Component | License | Obtained from |
+|---|---|---|
+| ALLCAPS source code | MIT | this repository |
+| ALLCAPS trained weights | MIT | released separately |
+| ProkBERT-mini-long **weights** | **CC-BY-NC-4.0** | downloaded from the Hub at runtime |
+| ProkBERT source code | MIT | [nbrg-ppcu/prokbert](https://github.com/nbrg-ppcu/prokbert) |
+
+No ProkBERT weights are contained in or redistributed by this repository or by the ALLCAPS
+checkpoint. ProkBERT is loaded frozen via `AutoModel.from_pretrained` and used purely as a feature
+extractor; every parameter in the ALLCAPS checkpoint was initialised and trained here.
+
+If you use ALLCAPS, please cite both ALLCAPS and ProkBERT (Ligeti et al. 2024,
+*Frontiers in Microbiology* 14:1331233,
+[doi:10.3389/fmicb.2023.1331233](https://doi.org/10.3389/fmicb.2023.1331233)) — attribution is
+required under ProkBERT's license.
