@@ -1,0 +1,72 @@
+# This script defines constants used across various modules in the data annotation pipeline.
+
+RND_STATE = 42
+
+# Data dependent constants
+TRAIN_SPLIT_RATIO = 0.9
+NON_TYPEABLE = "Non-typeable"
+DEFAULT_LABEL_COLUMN = "Serotype"
+DEFAULT_ID_COLUMN = "Public_ID"
+DEFAULT_CONTIG_COLUMN = "Contig_ID"
+DEFAULT_MISSING_LABEL = NON_TYPEABLE
+CONTIG_SEP = "#"
+# Record-id prefix marking a non-capsular contig: `NONCBL#Public_ID#Contig_ID`.
+# Kept on Public_ID downstream so per-contig lookups still match. Distinct from
+# DEFAULT_NONCBL_LABEL below, which is the *serotype* label for those rows.
+NONCBL_ID_PREFIX = "NONCBL"
+
+# 2D visualization
+DEFAULT_DOWNSAMPLE_SIZE = 1000
+
+# Inference, training, and classification
+DEFAULT_SEP = "|"
+DEFAULT_OUTPUT_DIM = 128
+DEFAULT_BATCH_SIZE = 32
+DEFAULT_NUM_LAYERS = 1
+DEFAULT_NHEAD = 4
+DEFAULT_EMBEDDING_DIM = 384  # 2560 for Nucleotide Transformer output TODO
+
+# Baseline analysis
+DEFAULT_TEST_SIZE = 0.2
+DEFAULT_COMPONENTS = 5
+DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
+DEFAULT_CV = 5  # Number of cross-validation folds
+
+# Label taxonomy
+MIN_SEROTYPE_COUNT = 5  # Min samples per serotype to keep as a resolved class
+SEROGROUP_LABELS = frozenset({"Serogroup 24", "Serogroup 33"})  # Serogroup-level labels
+
+# Inference
+DEFAULT_MODEL = "neuralbioinfo/prokbert-mini-long"
+DEFAULT_HEAD_MODEL = "transformer_trihead_lr"
+DEFAULT_CHUNK_SIZE = 4000
+DEFAULT_STRIDE_RATIO = 0.5  # 50% overlap
+DEFAULT_MAX_LEN = (
+    30_000  # Max length for CONTIGS, to avoid a sparse matrix upon padding
+)
+
+# Inference and training
+DEFAULT_NONCBL_LABEL = "NON-CBL"
+
+# Sketching
+DEFAULT_K = 15
+DEFAULT_SKETCH_SIZE = 2**14
+
+# k-NN classification
+DEFAULT_TEST_SIZE = 0.2
+DEFAULT_KNN_K = 5
+DEFAULT_MIN_COUNT = 2  # Minimum count for a label to be considered valid
+
+# Novelty detection
+DEFAULT_MIN_SEROGROUP_SIZE = 40  # Minimum number of samples in a serogroup to be considered for novelty detection
+DEFAULT_ENERGY_TEMPERATURE = 1.0  # Temperature T used in energy calculation
+
+# Training contrastive transformer
+DEFAULT_LR = 2e-5
+DEFAULT_EPOCHS = 100
+DEFAULT_EARLY_STOPPING = 10
+DEFAULT_TEMPERATURE = 0.07
+DEFAULT_WEIGHT_FINE = 1.0
+DEFAULT_WEIGHT_COARSE = 0.5
+DEFAULT_CONTRASTIVE_LOSS_RATIO = 0.5
+DEFAULT_KFOLDS = 5

@@ -3,7 +3,7 @@ import sys, os
 # `workflow.basedir` is this Snakefile's directory. Do NOT use __file__ here — inside a
 # Snakefile it resolves to snakemake's own workflow.py, so the append silently pointed at
 # the snakemake install and `from consts import *` failed with ModuleNotFoundError.
-sys.path.append(os.path.join(workflow.basedir, "scripts"))
+sys.path.append(os.path.join(workflow.basedir, "allcaps"))
 
 from consts import *
 
@@ -70,7 +70,7 @@ rule locus_cutting:
         f"{config['data_dir']}/contigs_noncbl.fasta"
     shell:
         """
-        python -m scripts.data_locus_cutter \
+        python -m allcaps.data_locus_cutter \
             --infiles {input.infiles} \
             --cutoff {params.cutoff} \
             --query {params.query} \
@@ -88,7 +88,7 @@ rule labels_preprocessing:
         f"{RESULTS_DIR}/cleaned_labels.csv"
     shell:
         """
-        python -m scripts.data_labels_preprocessing \
+        python -m allcaps.data_labels_preprocessing \
             --metadata {input.metadata} \
             --output_dir {RESULTS_DIR} \
             --cbl-fasta {input.cbl} \
@@ -112,7 +112,7 @@ rule train_test_split:
         f"{config['data_dir']}/test_metadata.csv",
     shell:
         """
-        python -m scripts.helpers.data_train_test_split \
+        python -m allcaps.helpers.data_train_test_split \
             --fastas {params.fastas} \
             --metadata {params.metadata} \
             --ratios {params.ratios} \
@@ -135,7 +135,7 @@ rule embed_base:
         max_chunks_per_batch=config.get("max_chunks_per_batch", 64)
     shell:
         """
-        python -m scripts.embed_transformer \
+        python -m allcaps.embed_transformer \
             --fasta {input.fasta} \
             --out_dir {output} \
             --device {params.device} \
@@ -156,7 +156,7 @@ rule labels_postprocessing:
         f"{config['data_dir']}/final_metadata.csv"
     shell:
         """
-        python -m scripts.data_labels_postprocessing \
+        python -m allcaps.data_labels_postprocessing \
             --clean_labels {input.labels} \
             --embedding_dir {input.emb_dir} \
             --output_dir {config[data_dir]}
@@ -176,7 +176,7 @@ rule train_model:
         model_params=config["model_params"]
     shell:
         """
-        python -m scripts.trihead.train_trihead_transformer \
+        python -m allcaps.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -202,7 +202,7 @@ rule embed_chunks:
         model_params=config["model_params"]
     shell:
         """
-        python -m scripts.trihead.infer_trihead_transformer \
+        python -m allcaps.trihead.infer_trihead_transformer \
             --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
@@ -221,7 +221,7 @@ rule visualize_embeddings:
         f"{RESULTS_DIR}/tsne_visualization.pdf"
     shell:
         """
-        python -m scripts.eval_visualize_embeddings \
+        python -m allcaps.eval_visualize_embeddings \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output_dir {RESULTS_DIR} \
@@ -240,7 +240,7 @@ rule capsule_classification:
         model_params=config["model_params"]
     shell:
         """
-        python -m scripts.eval_cbl_classifier \
+        python -m allcaps.eval_cbl_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --output {output} \
@@ -265,7 +265,7 @@ rule serotype_classification:
         model_params=config["model_params"]
     shell:
         """
-        python -m scripts.eval_serotype_classifier \
+        python -m allcaps.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -292,7 +292,7 @@ rule train_model_loo:
     # resources: gpu=1, mem_mb=32000  # optionally control resources
     shell:
         """
-        python -m scripts.trihead.train_trihead_transformer \
+        python -m allcaps.trihead.train_trihead_transformer \
             --embedding_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --output {output} \
@@ -321,7 +321,7 @@ rule embed_chunks_loo:
     # resources: gpu=1, mem_mb=16000
     shell:
         """
-        python -m scripts.trihead.infer_trihead_transformer \
+        python -m allcaps.trihead.infer_trihead_transformer \
             --embeddings_dir {input.embeddings_dir} \
             --labels {input.labels} \
             --model {input.model} \
@@ -351,7 +351,7 @@ rule serotype_classification_loo:
     # resources: gpu=1, mem_mb=8000
     shell:
         """
-        python -m scripts.eval_serotype_classifier \
+        python -m allcaps.eval_serotype_classifier \
             --embeddings {input.embeddings} \
             --model {input.model} \
             --labels {input.labels} \
@@ -380,7 +380,7 @@ rule novel_detection:
         embeddings=f"{RESULTS_DIR}/query_embeddings.npz",
     shell:
         """
-        python -m scripts.trihead.process_trihead_query \
+        python -m allcaps.trihead.process_trihead_query \
             --query {params.query} \
             --output_dir {RESULTS_DIR} \
             --base_model {params.base_model} \
@@ -427,7 +427,7 @@ rule knn_fit:
         k=KNN_K,
     shell:
         """
-        python -m scripts.knn_ood fit \
+        python -m allcaps.knn_ood fit \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
             --output {output} \
@@ -457,7 +457,7 @@ rule knn_predict_id:
         k_grid=KNN_K_GRID_FLAG,
     shell:
         """
-        python -m scripts.knn_ood predict \
+        python -m allcaps.knn_ood predict \
             --input_type id \
             --embeddings {input.embeddings} \
             --labels {input.labels} \
@@ -489,7 +489,7 @@ rule knn_predict_query:
         k_grid=KNN_K_GRID_FLAG,
     shell:
         """
-        python -m scripts.knn_ood predict \
+        python -m allcaps.knn_ood predict \
             --input_type query \
             --embeddings {input.embeddings} \
             --knn_index {input.knn_index} \

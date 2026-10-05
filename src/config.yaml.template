@@ -14,7 +14,7 @@ infiles: "data/infiles.txt"             # text file: one raw assembly FASTA path
 query_path: "data/query.fasta"          # loci to serotype / screen for novelty
 
 # Flanking genes used to cut the cps locus out of an assembly. Shipped with the repo.
-locus_cutter_query: "../assets/dexB_aliA_ATCC700669.fasta"
+locus_cutter_query: "allcaps/data/dexB_aliA_ATCC700669.fasta"
 
 # ── Locus cutting ─────────────────────────────────────────────────────────────
 locus_cutter_cutoff: 0.7          # min fraction of the flanking gene that must align
@@ -29,9 +29,12 @@ locus_cutter_max_extension: 30000 # cap on how far the locus may be extended (in
 split_fastas:
   - "results/my_run/data/contigs.fasta"
   - "results/my_run/data/contigs_noncbl.fasta"
+# `initial_metadata.csv`, NOT cleaned_labels.csv: the splitter needs the per-contig
+# table with a Contig_ID column, and cleaned_labels.csv carries only
+# Public_ID + Serotype, so pointing at it raises KeyError.
 split_metadata:
-  - "results/my_run/cleaned_labels.csv"
-  - "results/my_run/cleaned_labels.csv"
+  - "results/my_run/initial_metadata.csv"
+  - "results/my_run/initial_metadata.csv"
 split_ratios: "0.9"               # train fraction, counted in SAMPLES not contigs
 
 # ── Base embeddings (ProkBERT) ────────────────────────────────────────────────

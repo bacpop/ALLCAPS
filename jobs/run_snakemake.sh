@@ -41,7 +41,7 @@ export WANDB_MODE="${WANDB_MODE:-offline}"
 mkdir -p logs
 
 # Resolve the config to an absolute path before cd'ing: the Snakefile must run
-# from src/ (it resolves scripts/ relative to itself), but the config paths are
+# from src/ (it resolves allcaps/ relative to itself), but the config paths are
 # written relative to wherever you invoked this from.
 CONFIG="$(realpath "${CONFIG}")"
 cd "$(dirname "$0")/../src"

@@ -1,0 +1,39 @@
+# ALLCAPS — CPU environment.
+#
+#   mamba env create -f environment-cpu.yml
+#   conda activate allcaps
+#   pip install -e .          # installs the `ALLCAPS` command
+#
+# Supported: linux-64, osx-64, osx-arm64 (all solve-verified).
+# For NVIDIA GPUs use environment-gpu.yml instead — that one is linux-64 only.
+#
+# Why `pytorch-cpu` and not `torch`: `torch` is the *PyPI* package name and does not
+# exist on any conda channel. conda-forge ships `pytorch`, with `pytorch-cpu` /
+# `pytorch-gpu` as the variant selectors. Do not add `torch` here, and do not also
+# pip-install torch into this env — the pip wheel would shadow the conda build.
+name: allcaps
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pytorch-cpu>=2.0
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy>=1.10
+  - scikit-learn>=1.3
+  - tqdm>=4.65
+  - biopython>=1.81
+  - matplotlib-base>=3.7
+  - mappy>=2.26            # minimap2 bindings used by allcaps.data_locus_cutter
+  # Pinned <5: transformers 5.x removed get_extended_attention_mask from
+  # PreTrainedModel, which ProkBERT's trust_remote_code model calls, so the
+  # base model fails to load. Verified on 4.46 and 4.57.
+  - transformers>=4.35,<5
+  - accelerate>=0.25
+  - huggingface_hub>=0.23
+  - typer>=0.12
+  # Optional but cheap, and needed by the full pipeline:
+  - umap-learn>=0.5        # eval_visualize_embeddings --method umap
+  - snakemake-minimal>=7.32
+  - pip

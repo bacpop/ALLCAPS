@@ -1,157 +1,230 @@
-# ALLCAPS — pneumococcal *cps* locus embedding, serotyping and novel-serotype detection
+# ALLCAPS — pneumococcal *cps* locus serotyping and novel-serotype detection
 
-Tools and workflows to **embed, classify, and detect novel pneumococcal capsular biosynthetic
-loci (CBLs)** from genome assemblies. Given a locus, the model predicts
+Give ALLCAPS a *Streptococcus pneumoniae* genome assembly; it tells you the **serotype**,
+and whether that serotype looks **novel** — unlike anything it was trained on.
 
-1. whether it is a *cps* locus at all,
-2. its serotype (and genogroup), and
-3. whether that serotype is **novel** — unseen during training.
-
-## How it works
-
-A *cps* locus is extracted from an assembly using the flanking `dexB`/`aliA` genes, split into
-4 kbp chunks with 50% overlap, and embedded with **ProkBERT**. Those chunk embeddings pass
-through a learned `TransformerEncoder` (with positional embeddings), are masked-mean-pooled into
-a single 128-d L2-normalised locus embedding, and feed **three classification heads**: capsule
-y/n, serotype, and genogroup. The model class is `TransformerTriHeadLR`
-([src/scripts/models.py](src/scripts/models.py)).
-
-**Novel-serotype detection** compares the pooled embedding to every training *cps* embedding by
-**cosine distance**. A locus is called novel when the distance to its nearest training neighbour
-exceeds a threshold set at the **95th percentile of the training leave-one-out 1-NN distances**
-— a threshold derived without ever looking at novel data. The report also names the closest
-known serotype, so a novel locus can be placed in a neighbourhood rather than just rejected.
-
-An **energy** score (`E = −T·logsumexp(logits/T)`) is retained as a reference baseline and
-reported alongside. Evaluated over 98 leave-one-serotype-out folds, kNN was the better detector
-on every fold-level metric, so it is the deployed one.
-
-> Distances are computed in **float64**. In float32, sklearn's cosine (`1 − x·y`) cancels below
-> machine epsilon for the many near-identical loci in this dataset, quantising ~73% of
-> in-distribution distances toward zero.
+---
 
 ## Install
 
-```bash
-conda create -n pneumo python=3.10 -y && conda activate pneumo
-pip install -r requirements.txt
-```
-
-Or, on a GPU machine, `conda env create -f environment.yml && conda activate all-caps` — that
-route pulls a CUDA-matched PyTorch, which pip cannot do reliably.
-
-## Serotype a locus with a trained model
-
-The shortest useful path — no training, no Snakemake. Given a *cps* locus FASTA, a checkpoint
-and a fitted kNN index:
+Pick the environment that matches your machine, then install the package into it:
 
 ```bash
-cd src
-
-# Serotype calls + the pooled embeddings
-python -m scripts.trihead.process_trihead_query \
-    --query        my_loci.fasta \
-    --model_path   transformer_model.pth \
-    --energy_summary energy_summary.json \
-    --output_dir   out/ \
-    --device       cpu
-
-# The deployed novelty call
-python -m scripts.knn_ood predict \
-    --input_type query \
-    --embeddings out/query_embeddings.npz \
-    --knn_index  knn_index.npz \
-    --threshold_percentile 95.0 \
-    --max_k 5 \
-    --output out/knn_query_distances.csv
+# CPU — linux-64, osx-64, osx-arm64
+mamba env create -f environment-cpu.yml
+conda activate allcaps
+pip install .
 ```
 
-ProkBERT is downloaded from the Hub on first run. If you are starting from whole assemblies
-rather than cut loci, run `scripts.data_locus_cutter` first — it cuts between the `dexB`/`aliA`
-flanks shipped in [assets/](assets/).
+```bash
+# NVIDIA GPU (CUDA) — linux-64 only
+mamba env create -f environment-gpu.yml
+conda activate allcaps-gpu
+pip install .
+```
 
-To train your own model instead, see **[TRAINING.md](TRAINING.md)**.
+| Platform | CPU | NVIDIA GPU |
+|---|---|---|
+| linux-64 | ✅ | ✅ |
+| osx-arm64 (Apple silicon) | ✅ | — no CUDA build of PyTorch exists |
+| osx-64 (Intel Mac) | ✅ | — |
 
-## Run the pipeline
+Substitute `conda` for `mamba` if you prefer; `mamba` is much faster to solve.
+
+> **`requirements.txt` is for `pip` only.** `torch` is the PyPI package name and does not
+> exist on any conda channel, so `mamba create -f requirements.txt` fails with
+> `torch >=2.0 does not exist`. Use the environment files above for conda/mamba.
+
+## Serotype an assembly
+
+```bash
+ALLCAPS predict --input samples.txt --extract align --output results/
+```
+
+`samples.txt` lists one assembly FASTA per line (gzip is fine):
+
+```
+/data/ERR1788086.fasta
+/data/ERR714669.fasta.gz
+```
+
+Or pass paths directly — `ALLCAPS predict ERR1788086.fasta --extract align`.
+
+That writes `results/predictions.tsv` and prints the same table to stdout:
+
+| sample | contig | is_cps | serotype | serotype_confidence | is_novel_knn | nn_serotype | nn_distance | note |
+|---|---|---|---|---|---|---|---|---|
+| ERR1788086 | 7 | True | 19A | 0.981 | False | 19A | 0.004 | |
+| ERR714669 | 5 | True | 3 | 0.874 | True | 11A | 0.312 | NOVEL — unlike any training serotype; nearest known: 11A |
+
+The model weights and the novelty index download automatically on first run and are
+cached under `~/.cache/allcaps` (override with `ALLCAPS_CACHE`). ProkBERT, the base
+model, is fetched from the Hub the same way.
+
+### `--extract` — how the *cps* locus is found
+
+Required, because it is a real choice:
+
+| | What it does | When |
+|---|---|---|
+| `align` | Cuts between the `dexB`/`aliA` flanking genes with minimap2. | **Use this.** Fast, and matches how the model was trained. |
+| `scan` | Embeds rolling windows across the whole assembly; no flanking genes needed. | Only when the flanks are genuinely absent. Orders of magnitude slower — hours per genome on CPU. |
+
+Assemblies where neither flank is found appear in the output with
+`note = no cps locus found`, rather than silently vanishing from the table.
+
+### Useful options
+
+| Option | Meaning |
+|---|---|
+| `--device cuda\|cpu\|auto` | Default `auto` — CUDA when available, else CPU. |
+| `--model`, `--knn-index`, `--energy-summary` | Use your own artifacts instead of the released ones — e.g. from `ALLCAPS train`. |
+| `--offline` | Never reach the network; requires the three flags above. |
+| `--threshold-percentile` | Novelty threshold, as a percentile of training leave-one-out 1-NN distances. Default `95`. |
+| `--max-k` | Neighbours reported per locus (default 5), written to `neighbours_topk.csv`. |
+| `--cutoff` | Minimum alignment-length fraction for a flank hit (default `0.7`). Lower it if loci are being missed. |
+| `--quiet`, `--keep-intermediates` | Suppress the stdout table; keep cut loci and raw CSVs. |
+
+### Output columns
+
+| Column | Meaning |
+|---|---|
+| `is_cps` | Does the model think this is a capsular locus at all? When `False`, the serotype call carries no weight. |
+| `serotype`, `serotype_confidence` | The closed-set call and its softmax confidence. |
+| `genogroup` | Predicted genogroup. See the note in [TRAINING.md](TRAINING.md) — this head does not work well. |
+| `is_novel_knn` | **The deployed novelty call.** `True` means the locus is further from every training locus than the threshold. |
+| `nn_serotype`, `nn_distance` | The closest known serotype and its cosine distance — where to place a novel locus, rather than just rejecting it. |
+| `is_novel_energy`, `energy` | A reference baseline, reported for comparison. kNN is the deployed detector. |
+| `note` | Plain-language caveats: not a *cps* locus, novel, or no locus found. |
+
+---
+
+## How it works
+
+A *cps* locus is cut from the assembly using the flanking `dexB`/`aliA` genes, split into
+4 kbp chunks with 50% overlap, and embedded with **ProkBERT**. Those chunk embeddings pass
+through a learned `TransformerEncoder` (with positional embeddings), are masked-mean-pooled
+into a single 128-d L2-normalised locus embedding, and feed **three classification heads**:
+capsule y/n, serotype, and genogroup. The model class is `TransformerTriHeadLR`
+([src/allcaps/models.py](src/allcaps/models.py)).
+
+**Novel-serotype detection** compares the pooled embedding to every training *cps*
+embedding by **cosine distance**. A locus is called novel when the distance to its nearest
+training neighbour exceeds a threshold set at the **95th percentile of the training
+leave-one-out 1-NN distances** — a threshold derived without ever looking at novel data.
+
+An **energy** score (`E = −T·logsumexp(logits/T)`) is retained as a reference baseline.
+Evaluated over 98 leave-one-serotype-out folds, kNN was the better detector on every
+fold-level metric, so it is the deployed one.
+
+> Distances are computed in **float64**. In float32, sklearn's cosine (`1 − x·y`) cancels
+> below machine epsilon for the many near-identical loci in this dataset, quantising ~73%
+> of in-distribution distances toward zero.
+
+## Train your own model
+
+```bash
+ALLCAPS train --input manifest.csv --output run/ --device cuda
+```
+
+`manifest.csv` is a CSV/TSV with a `path` column and a `serotype` column, one row per
+assembly:
+
+```csv
+path,serotype
+/data/ERR1788086.fasta,19A
+/data/ERR714669.fasta,3
+```
+
+The *cps* locus is cut from each assembly and the leftover fragments become the
+non-capsular class, so there is no `is_cbl` column to supply. The run directory ends up
+holding the three artifacts `predict` consumes — `transformer_model.pth`,
+`knn_index.npz`, `energy_summary.json` — so a model trained here is immediately usable:
+
+```bash
+ALLCAPS predict --input samples.txt --extract align --output out/ \
+    --model run/transformer_model.pth \
+    --knn-index run/knn_index.npz \
+    --energy-summary run/energy_summary.json
+```
+
+This is a long job — the released checkpoint took about **19 hours on one A100**. Use
+`--resume` to continue a run that stopped. See **[TRAINING.md](TRAINING.md)** for
+hyperparameters, what each stage consumes, and footguns.
+
+## Tune per-serotype novelty thresholds
+
+```bash
+mamba env create -f environment-r.yml      # optional, ~325 MB, only for this command
+ALLCAPS knn --input results/loo-sweep/knn_raw/ \
+            --ground-truth merged_ground_truth.csv \
+            --output results/threshold-tuning/
+```
+
+An analysis command: it asks whether a *per-serotype* novelty threshold would beat the
+single global one ALLCAPS deploys. Implemented in R, and the only command that needs it —
+nothing in `predict` or `train` does.
+
+## The research pipeline (Snakemake)
+
+`ALLCAPS train` covers the training path. The Snakefile remains the route for reproducing
+the published analysis, including the leave-one-serotype-out folds:
 
 ```bash
 cp src/config.yaml.template config.yaml   # then edit the paths
-cd src                                    # the Snakefile resolves scripts relative to itself
+cd src                                    # the Snakefile resolves modules relative to itself
 snakemake -n  --configfile ../config.yaml # dry-run the DAG first
 snakemake --cores 4 --configfile ../config.yaml
 ```
 
-`config.yaml` and `data/` are gitignored.
+`config.yaml` and `data/` are gitignored. `locus_cutting` → `labels_preprocessing` →
+`train_test_split` → `embed_base` → `labels_postprocessing` → `train_model` →
+`embed_chunks` → evaluation → `novel_detection` → `knn_fit` →
+`knn_predict_id` / `knn_predict_query`. `train_model_loo`, `embed_chunks_loo` and
+`serotype_classification_loo` repeat training with one serotype withheld, and only
+materialise when `serotypes` is populated.
 
-### Configuration
-
-| Key | Meaning |
-|---|---|
-| `results_dir`, `data_dir` | Output and intermediate locations |
-| `infiles` | Text file listing one raw assembly FASTA path per line |
-| `metadata` | Sample metadata; needs a sample id, contig id, serotype and `Is_capsule` |
-| `locus_cutter_query` | FASTA of the flanking genes used to cut the locus |
-| `query_path` | Sequences to serotype / screen for novelty |
-| `split_fastas`, `split_metadata` | Positionally aligned lists of sequence/label sources to merge before splitting |
-| `split_ratios` | Train fraction, counted in **samples** not contigs |
-| `serotypes` | Serotypes to hold out for LOO; leave empty to skip those rules |
-| `knn_k`, `knn_threshold_percentile`, `knn_max_k` | Novelty detector; defaults `1`, `95.0`, `5` |
-| `model_params` | JSON **string** of model hyperparameters (must include `embedding_dim`) — see [TRAINING.md](TRAINING.md) |
-
-## Pipeline rules
-
-`locus_cutting` → `labels_preprocessing` → `train_test_split` → `embed_base` →
-`labels_postprocessing` → `train_model` → `embed_chunks` → evaluation
-(`visualize_embeddings`, `capsule_classification`, `serotype_classification`) →
-`novel_detection` → `knn_fit` → `knn_predict_id` / `knn_predict_query`.
-
-`train_model_loo`, `embed_chunks_loo` and `serotype_classification_loo` repeat training and
-evaluation with one serotype withheld, and only materialise when `serotypes` is populated.
-See [src/README.md](src/README.md) for the rule-by-rule breakdown and a one-line description of
-every module. On a cluster, [jobs/run_snakemake.sh](jobs/run_snakemake.sh) submits the whole DAG
-and [jobs/allcaps_slurm.sh](jobs/allcaps_slurm.sh) drives it stage by stage.
-
-## Outputs
-
-| File | Contents |
-|---|---|
-| `query_results.csv` | Per-locus serotype and genogroup calls, confidence, and the **energy** novelty flag (`is_novel_energy`) |
-| `knn_query_distances.csv` | The **deployed** novelty call: `is_novel_knn`, distance, and the nearest known serotype |
-| `knn_query_distances_topk.csv` | Long-format top-K neighbours per locus (`rank`, neighbour id, serotype, genogroup, distance) |
-| `knn_id_distances.csv` | The same scores on training data — every serotype is in-distribution here, so the flagged fraction is the false-positive rate |
-| `classification_report.txt`, `confusion_matrix_df.csv` | Closed-set serotype performance |
+See [src/README.md](src/README.md) for the rule-by-rule breakdown and a one-line
+description of every module, and [src/config.yaml.template](src/config.yaml.template) for
+every config key. On a cluster, [jobs/run_snakemake.sh](jobs/run_snakemake.sh) submits the
+whole DAG and [jobs/allcaps_slurm.sh](jobs/allcaps_slurm.sh) drives it stage by stage.
 
 ## Data model
 
 Every metadata row and FASTA record is one **contig**, keyed `Public_ID#Contig_ID`
-(non-capsular records keep a `NONCBL#` prefix on `Public_ID`). One **sample** is one assembly
-and may span several contigs — a *cps* locus is frequently split across two. Metrics in this
-repo are computed per contig unless stated otherwise.
+(non-capsular records keep a `NONCBL#` prefix on `Public_ID`). One **sample** is one
+assembly and may span several contigs — a *cps* locus is frequently split across two.
+Metrics in this repo are computed per contig unless stated otherwise.
 
 The train/test split
-([src/scripts/helpers/data_train_test_split.py](src/scripts/helpers/data_train_test_split.py))
-groups **by sample, never by contig**, so sibling contigs of one assembly never straddle the
-boundary; a runtime assertion enforces it.
+([src/allcaps/helpers/data_train_test_split.py](src/allcaps/helpers/data_train_test_split.py))
+groups **by sample, never by contig**, so sibling contigs of one assembly never straddle
+the boundary; a runtime assertion enforces it.
 
 ## Repository layout
 
-- `src/Snakefile` — the workflow.
-- `src/scripts/` — core modules (models, embedding, inference, evaluation, kNN novelty).
-- `src/scripts/helpers/` — data preparation, the train/test splitter, novelty sweeps and plots.
-- `src/scripts/trihead/` — training, inference and query processing for the deployed model.
-- `src/scripts/tests/` — the round-trip sanity check comparing the training and query
+- `ALLCAPS.py` — run the CLI from a plain clone, without installing.
+- `src/allcaps/cli/` — the `ALLCAPS` command (`predict`, `train`, `knn`).
+- `src/allcaps/` — core modules (models, embedding, inference, evaluation, kNN novelty).
+- `src/allcaps/helpers/` — data preparation, the train/test splitter, novelty sweeps and plots.
+- `src/allcaps/trihead/` — training, inference and query processing for the deployed model.
+- `src/allcaps/data/` — the `dexB`/`aliA` flanking genes used to cut the locus.
+- `src/allcaps/tests/` — the round-trip sanity check comparing the training and query
   embedding paths. Run it after any change to chunking, pooling or base-model loading.
-- `assets/` — the `dexB`/`aliA` flanking genes used to cut the locus.
+- `src/Snakefile` — the research workflow.
 - `jobs/` — the two cluster driver scripts.
 
-
-Modules run as packages from `src/`, e.g. `python -m scripts.knn_ood predict ...`.
+Modules also run standalone, e.g. `python -m allcaps.knn_ood predict ...` from `src/`.
 
 ## Weights & Biases (optional)
 
+Tracking is **off by default** — `allcaps.tracking` no-ops unless asked, so `wandb` need
+not even be installed. To turn it on:
+
 ```bash
-export WANDB_MODE=offline    # during the run
-wandb sync --sync-all        # afterwards
+pip install 'allcaps[wandb]'
+ALLCAPS train --input manifest.csv --output run/ --wandb
+export WANDB_MODE=offline    # to run detached, then: wandb sync --sync-all
 ```
 
 ## Contact

@@ -1,0 +1,41 @@
+# ALLCAPS — GPU (CUDA) environment.
+#
+#   mamba env create -f environment-gpu.yml
+#   conda activate allcaps-gpu
+#   pip install -e .          # installs the `ALLCAPS` command
+#
+# Supported: linux-64 ONLY. macOS has no CUDA build of PyTorch — use environment-cpu.yml
+# there and run with --device cpu.
+# Needs an NVIDIA driver visible to the solver (the `__cuda` virtual package).
+#
+# Why `pytorch-gpu` and not `pytorch-cuda`: the old `nvidia::pytorch-cuda` metapackage
+# no longer exists on any channel, and the `pytorch` channel is deprecated — an
+# environment pinning either of those cannot solve at all. conda-forge's `pytorch-gpu`
+# is the current selector for a CUDA build. Do not pip-install torch into this env;
+# the generic pip wheel would shadow the CUDA build.
+name: allcaps-gpu
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10
+  - pytorch-gpu>=2.0
+  - numpy>=1.24
+  - pandas>=2.0
+  - scipy>=1.10
+  - scikit-learn>=1.3
+  - tqdm>=4.65
+  - biopython>=1.81
+  - matplotlib-base>=3.7
+  - mappy>=2.26            # minimap2 bindings used by allcaps.data_locus_cutter
+  # Pinned <5: transformers 5.x removed get_extended_attention_mask from
+  # PreTrainedModel, which ProkBERT's trust_remote_code model calls, so the
+  # base model fails to load. Verified on 4.46 and 4.57.
+  - transformers>=4.35,<5
+  - accelerate>=0.25
+  - huggingface_hub>=0.23
+  - typer>=0.12
+  # Optional but cheap, and needed by the full pipeline:
+  - umap-learn>=0.5        # eval_visualize_embeddings --method umap
+  - snakemake-minimal>=7.32
+  - pip

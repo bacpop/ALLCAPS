@@ -1,0 +1,26 @@
+# ALLCAPS — optional R environment, needed ONLY for `ALLCAPS knn`.
+#
+#   mamba env create -f environment-r.yml
+#
+# `ALLCAPS knn` runs the per-serotype novelty threshold-tuning analysis, which is
+# implemented in R (allcaps/knn_create_dataset.R + allcaps/knn_calculate_novel.R).
+# Nothing else in ALLCAPS needs R, and this env costs ~325 MB / ~150 packages — which
+# is why it is kept out of environment-cpu.yml and environment-gpu.yml.
+#
+# Serotyping and training do NOT need this env.
+# Supported: linux-64, osx-arm64 (both solve-verified).
+name: allcaps-r
+channels:
+  - conda-forge
+dependencies:
+  - r-base>=4.3
+  - r-optparse      # command-line parsing for the two scripts
+  - r-dplyr
+  - r-readr
+  - r-tidyr
+  - r-purrr
+  - r-stringr
+  - r-ggplot2
+  - r-ggsci
+  - r-mlmetrics
+  - r-proc
