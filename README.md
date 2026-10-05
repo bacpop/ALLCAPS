@@ -1,4 +1,5 @@
-# ALLCAPS — pneumococcal *cps* locus serotyping and novel-serotype detection
+# ALLCAPS <img src='assets/ALLCAPS-logo.png' align="right" height="100" />
+**Pneumococcal *cps* locus serotyping and novel-serotype detection**
 
 Give ALLCAPS a *Streptococcus pneumoniae* genome assembly; it tells you the **serotype**,
 and whether that serotype looks **novel** — unlike anything it was trained on.
