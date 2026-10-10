@@ -58,9 +58,11 @@ That writes `results/predictions.tsv` and prints the same table to stdout:
 | ERR1788086 | 7 | True | 19A | 0.981 | False | 19A | 0.004 | |
 | ERR714669 | 5 | True | 3 | 0.874 | True | 11A | 0.312 | NOVEL — unlike any training serotype; nearest known: 11A |
 
-The model weights and the novelty index download automatically on first run and are
-cached under `~/.cache/allcaps` (override with `ALLCAPS_CACHE`). ProkBERT, the base
-model, is fetched from the Hub the same way.
+The model weights and the novelty index download automatically on first run from
+[bacpop/ALLCAPS](https://huggingface.co/bacpop/ALLCAPS) on the Hugging Face Hub —
+`transformer_model.pth`, `knn_index.npz` and `energy_summary.json` — and are cached under
+`~/.cache/allcaps` (override with `ALLCAPS_CACHE`). ProkBERT, the base model, is fetched
+from the Hub the same way. Use `--hf-repo` / `--revision` to pin a different repo or tag.
 
 ### `--extract` — how the *cps* locus is found
 
@@ -149,8 +151,7 @@ ALLCAPS predict --input samples.txt --extract align --output out/ \
     --energy-summary run/energy_summary.json
 ```
 
-This is a long job — the released checkpoint took about **19 hours on one A100**. Use
-`--resume` to continue a run that stopped. See **[TRAINING.md](TRAINING.md)** for
+Use `--resume` to continue a run that stopped. See **[TRAINING.md](TRAINING.md)** for
 hyperparameters, what each stage consumes, and footguns.
 
 ## Tune per-serotype novelty thresholds

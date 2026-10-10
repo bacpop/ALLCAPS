@@ -9,9 +9,7 @@ used immediately::
     knn_index.npz            the fitted novelty index (pickle-free)
     energy_summary.json      energy percentiles for the reference baseline
 
-This is a long job. The released checkpoint took roughly 19 hours on one A100, most of
-it in the 5-fold cross-validation inside `train_model`. Use `--resume` to pick up a run
-that stopped partway.
+Use `--resume` to pick up a run that stopped partway.
 """
 
 import json

@@ -8,9 +8,35 @@ The quickest route is the CLI, which runs every stage below from a manifest of a
 ALLCAPS train --input manifest.csv --output run/ --device cuda
 ```
 
-where `manifest.csv` has a `path` column and a `serotype` column. It writes the
-checkpoint, the fitted kNN index and `energy_summary.json` into `run/` — everything
-`ALLCAPS predict` needs. `--resume` skips stages whose outputs already exist.
+where `manifest.csv` has a `path` column and a `serotype` column, one row per assembly:
+
+```csv
+path,serotype
+/data/ERR1788086.fasta,19A
+/data/ERR714669.fasta.gz,3
+```
+
+It cuts the locus, cleans the labels, splits by sample, embeds with ProkBERT, trains,
+fits the novelty index and calibrates it — then writes the three artifacts
+`ALLCAPS predict` consumes into `run/`:
+
+| File | Used by `predict` as |
+|---|---|
+| `transformer_model.pth` | `--model` |
+| `knn_index.npz` | `--knn-index` |
+| `energy_summary.json` | `--energy-summary` |
+
+```bash
+ALLCAPS predict --input samples.txt --extract align --output out/ \
+    --model run/transformer_model.pth \
+    --knn-index run/knn_index.npz \
+    --energy-summary run/energy_summary.json
+```
+
+`--resume` skips stages whose outputs already exist. Hyperparameters not exposed as flags
+go through `--model-params '{"..": ..}'`, merged over the released defaults in
+`RELEASED_MODEL_PARAMS` ([src/allcaps/cli/train.py](src/allcaps/cli/train.py)); the rest of
+this file documents what those values mean.
 
 This file is about the `train_model` stage specifically — its inputs, its hyperparameters,
 and the handful of choices that silently change what you get. Use the Snakemake route
@@ -86,6 +112,17 @@ Three of those values are load-bearing and are **not** the code defaults:
   it is constructed and then multiplied by zero, so it has no effect.)
 - **`weight_geno: 0`** — the **genogroup head is not trained**; see §4.
 - **`dataset_name: multidomain_chunked`** — flat embedding directory; see §1.
+
+> ⚠️ **`ALLCAPS train` is not bit-for-bit this command.** `RELEASED_MODEL_PARAMS`
+> ([src/allcaps/cli/train.py](src/allcaps/cli/train.py)) carries `embedding_dim`,
+> `output_dim`, `num_layers`, `nhead`, `k_folds`, `random_state`, `temperature`, `alpha: 0`
+> and `dataset_name` — but **not** `weight_fine` / `weight_coarse` / `weight_sero` /
+> `weight_geno`, and the CLI passes no `--aug_*` flags, whose parser defaults disable
+> augmentation entirely (`aug_n_views = 1`). So a CLI run trains with `weight_coarse = 0.5`
+> (not 0.4), `weight_geno = 1` (not 0) and **no augmentation**. To match this command,
+> add the weights via `--model-params` and drive the module directly for the `--aug_*`
+> flags. For a new model on your own data none of this matters much; for reproducing the
+> released checkpoint, it does.
 
 ### Hyperparameters, in full
 
@@ -172,20 +209,23 @@ Consequences:
 
 ## 5. Footguns
 
-**Training requires CUDA.** `--device cuda` is not optional for training: the train and
-eval loops call `.cuda()` directly on every batch, so `--device cpu` fails regardless of what
-you pass. Inference and query processing do honour `--device cpu`.
+**Training honours `--device`, but you want CUDA anyway.** The train and eval loops follow
+the model's own device rather than calling `.cuda()`, so `--device cpu` runs — it is just far
+too slow to be useful at this scale. `ALLCAPS train --device auto` (the default) picks CUDA
+when it is available.
 
-**Training requires wandb.** `__main__` calls `wandb.init()` unconditionally. To run without
-a network or an account:
+**wandb is optional and off by default.** Metrics go through
+[allcaps.tracking](src/allcaps/tracking.py), which no-ops unless asked, so `wandb` need not
+be installed at all. To turn it on:
 
 ```bash
+pip install 'allcaps[wandb]'
+ALLCAPS train --input manifest.csv --output run/ --wandb    # or --wandb on the module
 export WANDB_MODE=offline     # writes to ./wandb/, sync later with `wandb sync --sync-all`
-# or
-export WANDB_MODE=disabled    # no run directory at all
 ```
 
 The project name is hard-coded as `WANDB_PROJECT_NAME` at the top of the training module.
+Never `import wandb` in pipeline code — go through `tracking`.
 
 **`--labeled_only` is not optional in practice.** Without it, unlabelled rows become a
 `Non-typeable` class and pollute the serotype vocabulary.
@@ -204,7 +244,10 @@ every metric.
 ## 6. After training
 
 Training alone does not give you a usable novelty detector. The deployed system needs the
-kNN index fitted on the trained model's own embeddings:
+kNN index fitted on the trained model's own embeddings. `ALLCAPS train` already runs all of
+this (stages `embed_chunks` → `serotype_classification` → `knn_fit` → `knn_predict_id` →
+`knn_export`); the commands below are the same stages by hand, for a run you drove module by
+module:
 
 ```bash
 # 1. Embed the training set through the trained model
@@ -248,8 +291,15 @@ python -m allcaps.knn_ood export \
     --threshold_percentile 95.0
 ```
 
-This writes plain arrays plus a `knn_index_config.json` sidecar carrying the resolved
-threshold, and round-trips bit-identically. `KnnOOD.load` accepts either format.
+This writes plain arrays plus a `knn_index_config.json` sidecar (override with
+`--config_output`) carrying the resolved threshold, and round-trips bit-identically.
+`KnnOOD.load` accepts either format.
+
+> The published Hugging Face repo names that sidecar **`knn_config.json`**, because that is
+> what the standalone `modeling_allcaps.py` there reads. Rename it on upload, or pass
+> `--config_output knn_config.json`. `ALLCAPS predict` does not read it at all — it
+> recomputes the threshold from the index's own leave-one-out distances via
+> `--threshold-percentile`, which is why the two agree.
 
 ---
 
@@ -261,7 +311,9 @@ Each LOO fold is a full retrain with one serotype removed from the label set:
 python -m allcaps.trihead.train_trihead_transformer ... --skip_labels 19A
 ```
 
-That serotype's genomes then become the query set for novelty evaluation — they are, by
+There is no `ALLCAPS train` flag for this — the LOO folds are a research path, driven by
+the module directly or by Snakemake. That serotype's genomes then become the query set for
+novelty evaluation — they are, by
 construction, a serotype the model has never seen. 98 such folds back the reported novelty
 numbers. Snakemake expands these from `config["serotypes"]`; on a cluster, drive them as a
 job array (see [jobs/allcaps_slurm.sh](jobs/allcaps_slurm.sh)).

@@ -19,8 +19,9 @@ logger = get_logger(__name__)
 #: Hub repo holding the released ALLCAPS artifacts.
 DEFAULT_HF_REPO = "bacpop/ALLCAPS"
 
-#: Filenames inside that repo.
-MODEL_FILENAME = "allcaps_trihead.pt"
+#: Filenames inside that repo. These must match the names `ALLCAPS train` writes, so a
+#: locally trained run directory and a Hub snapshot are interchangeable.
+MODEL_FILENAME = "transformer_model.pth"
 KNN_INDEX_FILENAME = "knn_index.npz"
 ENERGY_SUMMARY_FILENAME = "energy_summary.json"
 
