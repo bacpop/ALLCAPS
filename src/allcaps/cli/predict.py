@@ -25,6 +25,7 @@ DEFAULT_SCAN_STEP = 2000
 #: Novelty operating point. 95th percentile of the training leave-one-out 1-NN distances.
 DEFAULT_THRESHOLD_PERCENTILE = 95.0
 DEFAULT_MAX_K = 5
+DEFAULT_ENERGY_PERCENTILE = 93.0
 
 #: Columns of the final table, in order.
 OUTPUT_COLUMNS = [
@@ -132,7 +133,8 @@ def _concat_for_scan(samples: List[Sample], work: Path) -> Path:
 
 
 def _run_query(query_fasta: Path, work: Path, artifacts: art.Artifacts, device: str,
-               inference_mode: str, base_model: str, scan_step: int) -> Path:
+               inference_mode: str, base_model: str, scan_step: int,
+               energy_percentile: float) -> Path:
     """Serotype calls + pooled embeddings. Writes into ``work``."""
     from ..trihead import process_trihead_query
 
@@ -155,6 +157,7 @@ def _run_query(query_fasta: Path, work: Path, artifacts: art.Artifacts, device: 
             model_path=str(artifacts.model),
             model_params=model_params,
             inference_mode=inference_mode,
+            energy_percentile=energy_percentile,
             energy_summary=(
                 str(artifacts.energy_summary) if artifacts.energy_summary else None
             ),
@@ -331,6 +334,7 @@ def run(
     max_extension: int = 30_000,
     scan_step: int = DEFAULT_SCAN_STEP,
     threshold_percentile: float = DEFAULT_THRESHOLD_PERCENTILE,
+    energy_percentile: float = DEFAULT_ENERGY_PERCENTILE,
     max_k: int = DEFAULT_MAX_K,
     hf_repo: str = art.DEFAULT_HF_REPO,
     revision: Optional[str] = None,
@@ -371,7 +375,8 @@ def run(
             inference_mode = "scan"
 
         query_results = _run_query(
-            query_fasta, work, artifacts, device, inference_mode, base_model, scan_step
+            query_fasta, work, artifacts, device, inference_mode, base_model, scan_step,
+            energy_percentile,
         )
         knn_distances = _run_knn(work, artifacts, threshold_percentile, max_k)
         table = _merge(query_results, knn_distances)

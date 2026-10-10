@@ -9,7 +9,9 @@ used immediately::
     knn_index.npz            the fitted novelty index (pickle-free)
     energy_summary.json      energy percentiles for the reference baseline
 
-Use `--resume` to pick up a run that stopped partway.
+Every default here reproduces the released checkpoint — the recipe lives in
+``RELEASED_MODEL_PARAMS`` and ``RELEASED_TRAIN_DEFAULTS`` below, both transcribed from
+``jobs/new-gps-final.sh``. Use `--resume` to pick up a run that stopped partway.
 """
 
 import json
@@ -17,12 +19,8 @@ from pathlib import Path
 from typing import List, Optional
 
 from ..consts import (
-    DEFAULT_BATCH_SIZE,
     DEFAULT_CHUNK_SIZE,
     DEFAULT_EMBEDDING_DIM,
-    DEFAULT_EPOCHS,
-    DEFAULT_HEAD_MODEL,
-    DEFAULT_LR,
     DEFAULT_MAX_LEN,
     DEFAULT_MODEL,
     DEFAULT_OUTPUT_DIM,
@@ -35,8 +33,10 @@ from .manifest import Sample
 
 logger = get_logger(__name__)
 
-#: Hyperparameters of the released checkpoint. `alpha: 0` disables the contrastive
-#: term; both are load-bearing and documented in TRAINING.md.
+#: `model_params` of the released checkpoint. `alpha: 0` disables the contrastive term and
+#: `dataset_name` selects the flat embedding layout; both are load-bearing and documented
+#: in TRAINING.md. Every other key here restates a code default, so the run directory
+#: records what was trained instead of deferring to whatever the default is that day.
 RELEASED_MODEL_PARAMS = {
     "embedding_dim": DEFAULT_EMBEDDING_DIM,
     "output_dim": DEFAULT_OUTPUT_DIM,
@@ -47,6 +47,25 @@ RELEASED_MODEL_PARAMS = {
     "temperature": 0.07,
     "alpha": 0,
     "dataset_name": "multidomain_chunked",
+}
+
+#: The rest of the released recipe — the knobs that are plain arguments rather than
+#: `model_params` keys.
+#:
+#: `consts.DEFAULT_LR` and `consts.DEFAULT_BATCH_SIZE` are deliberately *not* used: 2e-5 is
+#: the contrastive-era learning rate and 32 is an inference batch size, and neither trained
+#: this model. The augmentation knobs are argparse-level too, so `--model-params` cannot
+#: reach them — before they were listed here they silently resolved to the training
+#: module's "off" defaults, and `ALLCAPS train` trained without augmentation at all.
+RELEASED_TRAIN_DEFAULTS = {
+    "epochs": 100,
+    "batch_size": 128,
+    "lr": 1e-3,
+    "aug_noise_std": 0.01,
+    "aug_chunk_dropout": 0.1,
+    "aug_spec_freq": 0.5,
+    "aug_spec_width": 16,
+    "aug_n_views": 2,
 }
 
 
@@ -77,9 +96,14 @@ def run(
     flanks: Optional[str] = None,
     device: str = "auto",
     base_model: str = DEFAULT_MODEL,
-    epochs: int = DEFAULT_EPOCHS,
-    batch_size: int = DEFAULT_BATCH_SIZE,
-    lr: float = DEFAULT_LR,
+    epochs: int = RELEASED_TRAIN_DEFAULTS["epochs"],
+    batch_size: int = RELEASED_TRAIN_DEFAULTS["batch_size"],
+    lr: float = RELEASED_TRAIN_DEFAULTS["lr"],
+    aug_noise_std: float = RELEASED_TRAIN_DEFAULTS["aug_noise_std"],
+    aug_chunk_dropout: float = RELEASED_TRAIN_DEFAULTS["aug_chunk_dropout"],
+    aug_spec_freq: float = RELEASED_TRAIN_DEFAULTS["aug_spec_freq"],
+    aug_spec_width: int = RELEASED_TRAIN_DEFAULTS["aug_spec_width"],
+    aug_n_views: int = RELEASED_TRAIN_DEFAULTS["aug_n_views"],
     model_params: Optional[dict] = None,
     split_ratio: float = TRAIN_SPLIT_RATIO,
     cutoff: float = 0.7,
@@ -217,8 +241,21 @@ def run(
     )
 
     # ── 6. train ──
+    # The `aug_*` arguments are named explicitly rather than left to `ns()`: they are
+    # plain parser arguments, so harvesting the module's defaults turns augmentation off,
+    # and the released model was trained with it on.
     checkpoint = run_dir / "transformer_model.pth"
-    tracking.start(config={"epochs": epochs, "lr": lr, **params}, enabled=wandb)
+    augmentation = {
+        "aug_noise_std": aug_noise_std,
+        "aug_chunk_dropout": aug_chunk_dropout,
+        "aug_spec_freq": aug_spec_freq,
+        "aug_spec_width": aug_spec_width,
+        "aug_n_views": aug_n_views,
+    }
+    tracking.start(
+        config={"epochs": epochs, "lr": lr, "batch_size": batch_size, **augmentation, **params},
+        enabled=wandb,
+    )
     try:
         stage(
             "train_model",
@@ -237,6 +274,7 @@ def run(
                 hierarchical_loss=True,
                 skip_labels=[],
                 wandb=wandb,
+                **augmentation,
             ),
             skip_if=maybe([checkpoint]),
         )
@@ -341,8 +379,11 @@ def run(
         "energy_summary": str(energy_summary) if energy_summary.is_file() else None,
         "device": device,
         "epochs": epochs,
+        "batch_size": batch_size,
+        "lr": lr,
         "n_samples": len(samples),
         "model_params": params,
+        "augmentation": augmentation,
         "threshold_percentile": threshold_percentile,
         "knn_k": knn_k,
     }

@@ -8,16 +8,16 @@ Three subcommands:
 """
 
 import json
-import sys
 from pathlib import Path
 from typing import List, Optional
 
 import typer
 
-from ..consts import DEFAULT_BATCH_SIZE, DEFAULT_EPOCHS, DEFAULT_LR, DEFAULT_MODEL
+from ..consts import DEFAULT_MODEL
 from ..logging_config import get_logger
 from . import artifacts as art
 from . import manifest as mf
+from .train import RELEASED_TRAIN_DEFAULTS
 
 logger = get_logger(__name__)
 
@@ -142,6 +142,12 @@ def predict(
         95.0, "--threshold-percentile",
         help="Novelty threshold as a percentile of training leave-one-out 1-NN distances.",
     ),
+    energy_percentile: float = typer.Option(
+        93.0, "--energy-percentile",
+        help="Operating point for the energy baseline, as a percentile key of "
+        "energy_summary.json (the released file carries 93, 95, 99 and 99.5). Affects "
+        "is_novel_energy only — the deployed kNN novelty call is unaffected.",
+    ),
     max_k: int = typer.Option(5, "--max-k", help="Neighbours to report per locus."),
     hf_repo: str = typer.Option(art.DEFAULT_HF_REPO, "--hf-repo", help="Hub repo for artifacts."),
     revision: Optional[str] = typer.Option(None, "--revision", help="Hub revision/tag."),
@@ -162,7 +168,8 @@ def predict(
             knn_index=knn_index, energy_summary=energy_summary, flanks=flanks,
             device=device, base_model=base_model, cutoff=cutoff,
             max_extension=max_extension, scan_step=scan_step,
-            threshold_percentile=threshold_percentile, max_k=max_k, hf_repo=hf_repo,
+            threshold_percentile=threshold_percentile,
+            energy_percentile=energy_percentile, max_k=max_k, hf_repo=hf_repo,
             revision=revision, offline=offline, quiet=quiet,
             keep_intermediates=keep_intermediates,
         )
@@ -184,6 +191,8 @@ def predict(
         "assembly. The cps locus is cut from each assembly with the dexB/aliA flanks, "
         "and the leftover fragments become the non-capsular class, so no is_cbl column "
         "is needed.\n\n"
+        "Every default reproduces the released checkpoint, so the bare command retrains "
+        "the published recipe on your data.\n\n"
         "This is a long job — the released checkpoint took about 19 hours on one A100. "
         "The output directory ends up holding the checkpoint, the kNN index and "
         "energy_summary.json, which is everything `predict` needs."
@@ -198,12 +207,35 @@ def train(
     flanks: Optional[str] = typer.Option(None, "--flanks", help="Flanking-gene FASTA."),
     device: str = typer.Option("auto", "--device", help="cuda, cpu, or auto."),
     base_model: str = typer.Option(DEFAULT_MODEL, "--base-model", help="ProkBERT model id."),
-    epochs: int = typer.Option(DEFAULT_EPOCHS, "--epochs"),
-    batch_size: int = typer.Option(DEFAULT_BATCH_SIZE, "--batch-size"),
-    lr: float = typer.Option(DEFAULT_LR, "--lr"),
+    epochs: int = typer.Option(RELEASED_TRAIN_DEFAULTS["epochs"], "--epochs"),
+    batch_size: int = typer.Option(RELEASED_TRAIN_DEFAULTS["batch_size"], "--batch-size"),
+    lr: float = typer.Option(RELEASED_TRAIN_DEFAULTS["lr"], "--lr"),
     model_params: Optional[str] = typer.Option(
         None, "--model-params",
         help="JSON object of hyperparameters, merged over the released defaults.",
+    ),
+    aug_noise_std: float = typer.Option(
+        RELEASED_TRAIN_DEFAULTS["aug_noise_std"], "--aug-noise-std",
+        help="Gaussian noise std added to chunk embeddings while training. Released "
+        "value; 0 disables.",
+    ),
+    aug_chunk_dropout: float = typer.Option(
+        RELEASED_TRAIN_DEFAULTS["aug_chunk_dropout"], "--aug-chunk-dropout",
+        help="Probability of dropping a chunk while training. Released value; 0 disables.",
+    ),
+    aug_spec_freq: float = typer.Option(
+        RELEASED_TRAIN_DEFAULTS["aug_spec_freq"], "--aug-spec-freq",
+        help="SpecAugment frequency-masking probability. Released value; 0 disables. "
+        "Setting this, --aug-noise-std and --aug-chunk-dropout all to 0 turns "
+        "augmentation off entirely.",
+    ),
+    aug_spec_width: int = typer.Option(
+        RELEASED_TRAIN_DEFAULTS["aug_spec_width"], "--aug-spec-width",
+        help="SpecAugment maximum mask width, in feature dimensions.",
+    ),
+    aug_n_views: int = typer.Option(
+        RELEASED_TRAIN_DEFAULTS["aug_n_views"], "--aug-n-views",
+        help="Augmented views per sample (1 = the original only).",
     ),
     split_ratio: float = typer.Option(
         0.9, "--split-ratio", help="Train fraction, counted in samples not contigs."
@@ -242,6 +274,9 @@ def train(
         train_impl.run(
             samples=samples, output=output, flanks=flanks, device=device,
             base_model=base_model, epochs=epochs, batch_size=batch_size, lr=lr,
+            aug_noise_std=aug_noise_std, aug_chunk_dropout=aug_chunk_dropout,
+            aug_spec_freq=aug_spec_freq, aug_spec_width=aug_spec_width,
+            aug_n_views=aug_n_views,
             model_params=params, split_ratio=split_ratio, cutoff=cutoff,
             max_extension=max_extension, threshold_percentile=threshold_percentile,
             knn_k=knn_k, seq_max_len=seq_max_len, records_per_batch=records_per_batch,
