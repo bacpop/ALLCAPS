@@ -5,19 +5,19 @@
 # - utilize multi-threading,
 # - store non-CBL sequences for downstream tasks.
 
+import argparse
+import gzip
+import os
+from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
+from functools import partial
+
 import mappy as mp
+import numpy as np
 from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
-
-import os
-import gzip
-import argparse
 from tqdm import tqdm
-import numpy as np
-from functools import partial
-from collections import defaultdict
-from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from .consts import CONTIG_SEP, NONCBL_ID_PREFIX, RND_STATE
 from .logging_config import get_logger
@@ -192,7 +192,7 @@ def save_non_cbl(records, missing_files, list_len, out_path):
     Save non-CBL records to a separate file. The missing files contigs are also appended.
     Too short sequences are filtered out. Too long sequences are randomly subsampled.
     """
-    MIN_LENGTH, MAX_LENGTH = 5000, 25000  # TODO use the histogram from
+    MIN_LENGTH, MAX_LENGTH = 5000, 25000  # TODO use the histogram
     for missing_file in missing_files:
         _open = file_handler(missing_file)
         public_name = extract_public_name(missing_file)
@@ -211,9 +211,7 @@ def save_non_cbl(records, missing_files, list_len, out_path):
     # Filter out too short sequences
     records = [record for record in records if len(record.seq) >= MIN_LENGTH]
     # Subsample too long sequences according to the list_len distribution
-    records = list(
-        map(
-            lambda record: (
+    records = [(
                 record
                 if len(record.seq) <= MAX_LENGTH
                 else SeqRecord(
@@ -222,10 +220,7 @@ def save_non_cbl(records, missing_files, list_len, out_path):
                     id=record.id,
                     description=f"subsampled {record.description}",
                 )
-            ),
-            records,
-        )
-    )
+            ) for record in records]
     assert_unique_ids(records, "non-CBL fragments")
     with open(out_path, "w") as o:
         SeqIO.write(records, o, "fasta")
@@ -418,7 +413,7 @@ def main(options):
     # check if FASTA is gzipped
     gzipped = False
     with open(query, "rb") as test_f:
-        gzipped = True if test_f.read(2) == b"\x1f\x8b" else False
+        gzipped = test_f.read(2) == b"\x1f\x8b"
 
     _open = partial(gzip.open, mode="rt") if gzipped == True else open
 
@@ -433,12 +428,12 @@ def main(options):
             seq_pair_dict[id].append(sequence)
 
     # check that each sequence pair only has two sequences
-    for _, seq_pair in seq_pair_dict.items():
+    for seq_pair in seq_pair_dict.values():
         assert len(seq_pair) == 2
 
     logger.info("Processing files listed in %s...", infiles)
     with open(infiles, "r") as f:
-        file_list = [line.strip() for line in f.readlines()]
+        file_list = [line.strip() for line in f]
 
     cut_records, partial_found, not_found, non_cbl_records = parallel_cut_loci(
         file_list, seq_pair_dict, cutoff, options.max_extension
@@ -458,11 +453,9 @@ def main(options):
 
     logger.info("Writing partial and not found files...")
     with open(outpref + "_partial.txt", "w") as o:
-        for entry in partial_found:
-            o.write(entry + "\n")
+        o.writelines(entry + "\n" for entry in partial_found)
     with open(outpref + "_absent.txt", "w") as o:
-        for entry in not_found:
-            o.write(entry + "\n")
+        o.writelines(entry + "\n" for entry in not_found)
 
     if options.save_noncbl:
         logger.info("Saving non-CBL sequences...")

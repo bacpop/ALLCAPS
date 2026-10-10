@@ -322,7 +322,7 @@ def main(args):
             embeddings = np.vstack([embeddings, additional_embeddings])
             labels = pd.concat(
                 [labels, additional_labels_df], ignore_index=True
-            )  # .reset_index(drop=True) TODO ?
+            )
 
     calc_fn = partial(
         calculate_umap

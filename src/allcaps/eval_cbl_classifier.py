@@ -21,13 +21,11 @@ def main(args):
 
     logger.info("Loading embeddings from: %s", args.embeddings)
     X = np.load(args.embeddings, allow_pickle=True)  # shape: (N, L, D)
-    labels = list(
-        map(lambda sid: sid.split(sep), X.keys())
-    )  # assuming keys are in the format "capsule_label|public_name"
+    labels = [sid.split(sep) for sid in X]  # assuming keys are in the format "capsule_label|public_name"
     labels = pd.DataFrame(labels, columns=["Capsule_label", "Public_name"])
     labels["Capsule_label"] = (
         labels["Capsule_label"].map(lambda x: 1 if x == "cbl" else 0).astype(int)
-    )  # TODO clean up this shit
+    )
 
     X = np.stack([X[k] for k in X.keys()])
     y = labels["Capsule_label"].values

@@ -1,10 +1,11 @@
-import os
 import argparse
+import os
+
 import numpy as np
 import pandas as pd
 from Bio import SeqIO
 
-from ..consts import RND_STATE, DEFAULT_LABEL_COLUMN
+from ..consts import DEFAULT_LABEL_COLUMN, RND_STATE
 from ..logging_config import get_logger
 
 logger = get_logger(__name__)
@@ -260,7 +261,7 @@ def main(args):
     if not os.path.exists(args.output_dir):
         os.makedirs(args.output_dir)
 
-    serogroups_str = "_".join(list(map(lambda s: s.replace("/", ""), args.serogroups)))
+    serogroups_str = "_".join([s.replace("/", "") for s in args.serogroups])
     if len(serogroups) > 1 and not args.sample_all:
         outpref = f"{args.output_dir}/sequences_weighted_{args.sample_size}_{RND_STATE}"
         if args.serogroups:

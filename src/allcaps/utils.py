@@ -302,9 +302,7 @@ def load_data(
     labels_df = pd.read_csv(
         labels_path, index_col=0, sep="\t" if labels_path.endswith(".tsv") else ","
     )
-    labels_df["Serotype"] = labels_df["Serotype"].fillna(
-        missing_label
-    )  # TODO should be empty already
+    labels_df["Serotype"] = labels_df["Serotype"].fillna(missing_label)
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
     keys = (

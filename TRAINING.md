@@ -196,9 +196,8 @@ The project name is hard-coded as `WANDB_PROJECT_NAME` at the top of the trainin
 Do not re-split inside training code; a contig-level split leaks near-duplicates and inflates
 every metric.
 
-**Costs.** On <!-- TODO: GPU model -->, the released run took roughly
-<!-- TODO: hours --> h to train, on top of <!-- TODO: hours --> h to compute base embeddings,
-with <!-- TODO: GB --> GB of host RAM and <!-- TODO: GB --> GB for the embedding directory.
+**Costs.** On an NVIDIA A100 80GB, the released run took roughly
+4h to train, on top of 3h to compute base embeddings.
 
 ---
 

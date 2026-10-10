@@ -1,28 +1,28 @@
-import json
 import argparse
-from tqdm import tqdm
+import json
 
-import torch
 import numpy as np
 import pandas as pd
+import torch
 from sklearn.metrics import (
-    classification_report,
-    f1_score,
     accuracy_score,
+    classification_report,
     confusion_matrix,
+    f1_score,
 )
+from tqdm import tqdm
 
-from .models import ModelRegistry
 from .consts import (
-    DEFAULT_LABEL_COLUMN,
-    DEFAULT_NONCBL_LABEL,
-    DEFAULT_SEP,
     DEFAULT_BATCH_SIZE,
-    DEFAULT_MISSING_LABEL,
     DEFAULT_ENERGY_TEMPERATURE,
     DEFAULT_HEAD_MODEL,
+    DEFAULT_LABEL_COLUMN,
+    DEFAULT_MISSING_LABEL,
+    DEFAULT_NONCBL_LABEL,
+    DEFAULT_SEP,
 )
 from .logging_config import get_logger
+from .models import ModelRegistry
 from .utils import get_sample_id
 
 logger = get_logger(__name__)
@@ -42,9 +42,7 @@ def main(args):
     labels_df = pd.read_csv(
         args.labels, index_col=0, sep="\t" if args.labels.endswith(".tsv") else ","
     )
-    labels_df["Serotype"] = labels_df[label_column].fillna(
-        missing_label
-    )  # TODO should be empty already
+    labels_df["Serotype"] = labels_df[label_column].fillna(missing_label)
     labels_df = labels_df[labels_df["Serotype"] != missing_label]
 
     keys = (
@@ -158,7 +156,7 @@ def main(args):
                 }
                 summary = {
                     "temperature": energy_temperature,
-                    "count_total": int(len(labels_df)),
+                    "count_total": len(labels_df),
                     "count_capsulated": int(caps_mask.sum()),
                     "percentiles_serotype": percentiles,
                 }
@@ -216,7 +214,7 @@ def main(args):
         f1_macro = f1_score(y_true, y_pred, average="macro")
 
         # Generate classification reports
-        unique_serotypes = sorted(list(set(y_true) | set(y_pred)))
+        unique_serotypes = sorted(set(y_true) | set(y_pred))
         clf_report = classification_report(
             y_true, y_pred, target_names=unique_serotypes, labels=unique_serotypes
         )

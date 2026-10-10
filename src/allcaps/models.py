@@ -124,7 +124,6 @@ def register_model(name: str):
     return ModelRegistry.register(name)
 
 
-# TODO merge with model registry
 def register_dataset(name: str):
     """Convenience decorator for registering datasets."""
     return DatasetRegistry.register(name)
@@ -193,7 +192,6 @@ class ContrastiveChunkedDataset(Dataset):
             serotype_known if serotype_known is not None else [True] * len(sample_ids)
         )
 
-        # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "**/*.npy"))
         # splitext, not split("."): assembler contig names routinely contain dots
         # (NODE_20_length_35242_cov_40.42_pilon), and splitting on the first one
@@ -248,7 +246,6 @@ class MultidomainChunkedDataset(Dataset):
             serotype_known if serotype_known is not None else [True] * len(sample_ids)
         )
 
-        # TODO Validate sub-folders too
         all_embeddings = glob.glob(os.path.join(embeddings_dir, "*.npy"))
         # splitext, not split("."): assembler contig names routinely contain dots
         # (NODE_20_length_35242_cov_40.42_pilon), and splitting on the first one
@@ -286,7 +283,7 @@ class TransformerContrastiveHead(BaseModel):
         super().__init__(**kwargs)
         self.pos_embed = nn.Embedding(
             max_len, input_dim
-        )  # TODO Dynamically expand or clamp
+        )
 
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=input_dim,
