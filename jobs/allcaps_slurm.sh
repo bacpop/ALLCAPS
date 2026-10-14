@@ -55,7 +55,7 @@ DATA_DIR="${DATA_DIR:-${RESULTS_DIR}/data}"
 RAW_INFILES="${RAW_INFILES:-/path/to/infiles.txt}"        # one assembly FASTA path per line
 RAW_METADATA="${RAW_METADATA:-/path/to/metadata.csv}"     # sample metadata
 QUERY_FASTA="${QUERY_FASTA:-/path/to/query.fasta}"        # loci to serotype / screen
-FLANK_FASTA="${FLANK_FASTA:-${REPO_DIR}/assets/dexB_aliA_ATCC700669.fasta}"
+FLANK_FASTA="${FLANK_FASTA:-${REPO_DIR}/src/allcaps/data/dexB_aliA_ATCC700669.fasta}"
 
 # Model
 BASE_MODEL="neuralbioinfo/prokbert-mini-long"
@@ -109,7 +109,7 @@ stage() { echo "[STAGE $1] $2"; }
 
 if [[ "${RUN_LOCUS_CUT}" == true ]]; then
     stage 000 "Cutting cps loci from raw assemblies"
-    python -m scripts.data_locus_cutter \
+    python -m allcaps.data_locus_cutter \
         --infiles "${RAW_INFILES}" \
         --query   "${FLANK_FASTA}" \
         --outpref "${DATA_DIR}/contigs" \
@@ -120,7 +120,7 @@ fi
 
 if [[ "${RUN_LABELS}" == true ]]; then
     stage 001 "Preprocessing labels"
-    python -m scripts.data_labels_preprocessing \
+    python -m allcaps.data_labels_preprocessing \
         --metadata "${RAW_METADATA}" \
         --output_dir "${DATA_DIR}" \
         --cbl-fasta    "${DATA_DIR}/contigs.fasta" \
@@ -129,7 +129,7 @@ fi
 
 if [[ "${RUN_SPLIT}" == true ]]; then
     stage 002 "Train/test split (grouped by sample)"
-    python -m scripts.helpers.data_train_test_split \
+    python -m allcaps.helpers.data_train_test_split \
         --fastas   "${DATA_DIR}/contigs.fasta" "${DATA_DIR}/contigs_noncbl.fasta" \
         --metadata "${DATA_DIR}/initial_metadata.csv"  "${DATA_DIR}/initial_metadata.csv" \
         --ratios 0.9 \
@@ -138,7 +138,7 @@ fi
 
 if [[ "${RUN_EMBED}" == true ]]; then
     stage 003 "ProkBERT chunk embeddings"
-    python -m scripts.embed_transformer \
+    python -m allcaps.embed_transformer \
         --fasta "${DATA_DIR}/train.fasta" \
         --out_dir "${RESULTS_DIR}/base_embeddings_chunked" \
         --model_name "${BASE_MODEL}" \
@@ -147,7 +147,7 @@ fi
 
 if [[ "${RUN_META}" == true ]]; then
     stage 004 "Filtering metadata to samples that have embeddings"
-    python -m scripts.data_labels_postprocessing \
+    python -m allcaps.data_labels_postprocessing \
         --clean_labels "${DATA_DIR}/train_metadata.csv" \
         --embedding_dir "${RESULTS_DIR}/base_embeddings_chunked" \
         --output_dir "${DATA_DIR}"
@@ -155,7 +155,7 @@ fi
 
 if [[ "${RUN_TRAIN}" == true ]]; then
     stage 005 "Training"
-    python -m scripts.trihead.train_trihead_transformer \
+    python -m allcaps.trihead.train_trihead_transformer \
         --embedding_dir "${RESULTS_DIR}/base_embeddings_chunked" \
         --labels "${DATA_DIR}/final_metadata.csv" \
         --output "${RESULTS_DIR}/transformer_model.pth" \
@@ -169,7 +169,7 @@ fi
 
 if [[ "${RUN_INFER}" == true ]]; then
     stage 006 "Inference on the training set"
-    python -m scripts.trihead.infer_trihead_transformer \
+    python -m allcaps.trihead.infer_trihead_transformer \
         --embeddings_dir "${RESULTS_DIR}/base_embeddings_chunked" \
         --labels "${DATA_DIR}/final_metadata.csv" \
         --model "${RESULTS_DIR}/transformer_model.pth" \
@@ -181,14 +181,14 @@ fi
 
 if [[ "${RUN_EVAL}" == true ]]; then
     stage 007 "Evaluation"
-    python -m scripts.eval_cbl_classifier \
+    python -m allcaps.eval_cbl_classifier \
         --embeddings "${RESULTS_DIR}/inference_results.npz" \
         --model "${RESULTS_DIR}/transformer_model.pth" \
         --output "${RESULTS_DIR}/cbl_results.txt" \
         --device cuda --batch_size "${BATCH_SIZE}" \
         --model_params "${MODEL_PARAMS}"
 
-    python -m scripts.eval_serotype_classifier \
+    python -m allcaps.eval_serotype_classifier \
         --embeddings "${RESULTS_DIR}/inference_results.npz" \
         --model "${RESULTS_DIR}/transformer_model.pth" \
         --labels "${DATA_DIR}/final_metadata.csv" \
@@ -199,7 +199,7 @@ fi
 
 if [[ "${RUN_SANITY}" == true ]]; then
     stage 008 "Round-trip sanity check (training vs query embedding paths)"
-    python -m scripts.tests.sanity_check_roundtrip \
+    python -m allcaps.tests.sanity_check_roundtrip \
         --fasta "${DATA_DIR}/train.fasta" \
         --labels "${DATA_DIR}/final_metadata.csv" \
         --model "${RESULTS_DIR}/transformer_model.pth" \
@@ -210,7 +210,7 @@ fi
 
 if [[ "${RUN_KNN_FIT}" == true ]]; then
     stage 009 "Fitting the kNN novelty index"
-    python -m scripts.knn_ood fit \
+    python -m allcaps.knn_ood fit \
         --embeddings "${RESULTS_DIR}/inference_results.npz" \
         --labels "${DATA_DIR}/final_metadata.csv" \
         --output "${RESULTS_DIR}/knn_index.pkl" \
@@ -221,7 +221,7 @@ if [[ "${RUN_KNN_ID}" == true ]]; then
     stage 010 "Calibration: scoring the training set against its own index"
     # Everything here is in-distribution, so the flagged fraction IS the
     # false-positive rate. Expect it to land near (100 - percentile)%.
-    python -m scripts.knn_ood predict \
+    python -m allcaps.knn_ood predict \
         --input_type id \
         --embeddings "${RESULTS_DIR}/inference_results.npz" \
         --labels "${DATA_DIR}/final_metadata.csv" \
@@ -235,7 +235,7 @@ if [[ "${RUN_QUERY}" == true ]]; then
     stage 011 "Running the query FASTA through the model"
     # --energy_summary must be passed explicitly: without it the script falls
     # back to hard-coded percentiles calibrated on a different model.
-    python -m scripts.trihead.process_trihead_query \
+    python -m allcaps.trihead.process_trihead_query \
         --query "${QUERY_FASTA}" \
         --output_dir "${RESULTS_DIR}/test_output" \
         --base_model "${BASE_MODEL}" \
@@ -249,7 +249,7 @@ fi
 
 if [[ "${RUN_KNN_QUERY}" == true ]]; then
     stage 012 "Novelty detection on the query (the deployed call)"
-    python -m scripts.knn_ood predict \
+    python -m allcaps.knn_ood predict \
         --input_type query \
         --embeddings "${RESULTS_DIR}/test_output/query_embeddings.npz" \
         --knn_index "${RESULTS_DIR}/knn_index.pkl" \
@@ -261,7 +261,7 @@ fi
 
 if [[ "${RUN_EXPORT}" == true ]]; then
     stage 013 "Exporting a pickle-free index for publication"
-    python -m scripts.knn_ood export \
+    python -m allcaps.knn_ood export \
         --knn_index "${RESULTS_DIR}/knn_index.pkl" \
         --output "${RESULTS_DIR}/knn_index.npz" \
         --threshold_percentile "${KNN_THRESHOLD_PERCENTILE}"
@@ -271,7 +271,7 @@ if [[ "${RUN_EMBED_TEST}" == true ]]; then
     stage 014 "ProkBERT chunk embeddings for the test split"
     # The training pipeline only embeds train.fasta. The LR baseline needs the
     # test contigs in the same 384-d chunk space, so embed them once here.
-    python -m scripts.embed_transformer \
+    python -m allcaps.embed_transformer \
         --fasta "${DATA_DIR}/test.fasta" \
         --out_dir "${RESULTS_DIR}/test_embeddings_chunked" \
         --model_name "${BASE_MODEL}" \
@@ -284,7 +284,7 @@ if [[ "${RUN_BASELINE_LR}" == true ]]; then
     # protocol behind the ALLCAPS test numbers, so the two are comparable.
     # Drop --test_* to fall back to grouped cross-validation on the train split,
     # which measures something else and should not go in the same table.
-    python -m scripts.eval_baseline_lr \
+    python -m allcaps.eval_baseline_lr \
         --embedding_dir "${RESULTS_DIR}/base_embeddings_chunked" \
         --labels "${DATA_DIR}/final_metadata.csv" \
         --test_embedding_dir "${RESULTS_DIR}/test_embeddings_chunked" \

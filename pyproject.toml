@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "allcaps"
+version = "1.0.0"
+description = "Embed, classify and detect novel pneumococcal capsular biosynthetic loci (CBLs) from genome assemblies"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Alireza Tajmirriahi" },
+    { name = "Sam Horsfield" },
+]
+keywords = ["pneumococcus", "serotyping", "capsule", "cps", "genomics", "ProkBERT"]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+]
+
+# Runtime dependencies. Deliberately excludes:
+#   - wandb    : experiment tracking only; see the [wandb] extra and allcaps.tracking
+#   - seaborn  : declared in the old requirements.txt but imported nowhere
+#   - snakemake: only needed to reproduce the training DAG; see the [workflow] extra
+#   - umap-learn: only for `eval_visualize_embeddings --method umap`; see [viz]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "tqdm>=4.65",
+    "biopython>=1.81",
+    "mappy>=2.26",          # minimap2 bindings — allcaps.data_locus_cutter
+    "torch>=2.0",
+    # Pinned <5: transformers 5.x removed get_extended_attention_mask from
+    # PreTrainedModel, which ProkBERT's trust_remote_code model calls, so the base
+    # model fails to load. Verified on 4.46 and 4.57.
+    "transformers>=4.35,<5",
+    "accelerate>=0.25",     # not imported directly; transformers uses it for device placement
+    "typer>=0.12",          # the ALLCAPS CLI
+    "huggingface_hub>=0.23", # resolves the published checkpoint / kNN index
+    "matplotlib>=3.7",
+]
+
+[project.optional-dependencies]
+wandb = ["wandb>=0.16"]
+viz = ["umap-learn>=0.5"]
+workflow = ["snakemake>=7.32"]
+dev = ["pytest>=7.4"]
+
+[project.scripts]
+ALLCAPS = "allcaps.cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/bacpop/pneumococcal-serotyping"
+Issues = "https://github.com/bacpop/pneumococcal-serotyping/issues"
+
+[tool.setuptools]
+package-dir = { "" = "src" }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["allcaps*"]
+
+[tool.setuptools.package-data]
+"allcaps.data" = ["*.fasta"]
+"allcaps" = ["*.R"]

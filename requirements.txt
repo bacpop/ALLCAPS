@@ -1,4 +1,14 @@
-# Runtime dependencies for ALLCAPS.
+# Runtime dependencies for ALLCAPS — for `pip install` ONLY.
+#
+#   pip install -r requirements.txt
+#
+# ⚠️  This file is NOT a conda/mamba spec file. `torch` is the PyPI package name and
+# does not exist on any conda channel, so `conda create --file requirements.txt` or
+# `mamba create -f requirements.txt` fails with "torch >=2.0 does not exist".
+# For conda/mamba use environment-cpu.yml or environment-gpu.yml instead.
+#
+# Prefer `pip install .`, which reads pyproject.toml and also installs the ALLCAPS
+# command. This file is kept as the plain pip dependency list.
 #
 # Lower bounds only — these are the versions the pipeline is known to work with,
 # not a lockfile. If you need bit-reproducibility of the published results, pin
@@ -10,7 +20,7 @@
 #    (verified on torch 2.10).
 #  - A `.pkl` kNN index is an unpickled sklearn estimator and is version-fragile
 #    across scikit-learn releases. Prefer the `.npz` index
-#    (`python -m scripts.knn_ood export`), which is plain arrays.
+#    (`python -m allcaps.knn_ood export`), which is plain arrays.
 
 numpy>=1.24
 pandas>=2.0
@@ -20,18 +30,27 @@ tqdm>=4.65
 
 # Sequence I/O and locus cutting
 biopython>=1.81
-mappy>=2.26                # minimap2 bindings — required by scripts.data_locus_cutter
+mappy>=2.26                # minimap2 bindings — required by allcaps.data_locus_cutter
 
 # Model
 torch>=2.0
-transformers>=4.35        # ProkBERT is loaded with trust_remote_code=True
+# ProkBERT is loaded with trust_remote_code=True. Pinned <5: transformers 5.x
+# removed get_extended_attention_mask from PreTrainedModel, which ProkBERT's
+# remote code calls, so the base model fails to load. Verified on 4.46 and 4.57.
+transformers>=4.35,<5
 accelerate>=0.25          # not imported directly; transformers uses it for device placement
 
 # Plotting and dimensionality reduction
 matplotlib>=3.7
-seaborn>=0.12
-umap-learn>=0.5            # required by scripts.eval_visualize_embeddings --method umap
+umap-learn>=0.5            # required by allcaps.eval_visualize_embeddings --method umap
 
 # Workflow and experiment tracking
 snakemake>=7.32
-wandb>=0.16                # training calls wandb.init(); set WANDB_MODE=offline to run detached
+
+# Optional: experiment tracking. allcaps.tracking no-ops when this is absent, and
+# `ALLCAPS train` only touches it when given --wandb.
+# wandb>=0.16
+
+# The ALLCAPS CLI
+typer>=0.12
+huggingface_hub>=0.23
